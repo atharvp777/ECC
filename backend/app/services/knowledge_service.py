@@ -14,6 +14,8 @@ from collections import Counter
 from typing import Optional
 
 from app.core.config import settings
+from app.models.project import Project
+from app.core.database import SessionLocal
 
 INDEX_DIR   = settings.KNOWLEDGE_DIR / "faiss_index"
 CHUNKS_FILE = INDEX_DIR / "chunks.json"
@@ -174,6 +176,8 @@ def answer_from_docs(question: str) -> dict:
       * If relevant chunks are found, they are inserted into the prompt as context.
       * If no chunks are found, an empty‑context prompt is used – the model is
         instructed not to fabricate information.
+      * If a project matching the question is found, its basic details are
+        added to the context so the model can answer about it.
       * Calls Groq, handling any unexpected errors gracefully.
       * Always returns the same structure expected by the frontend.
     """
@@ -202,14 +206,30 @@ def answer_from_docs(question: str) -> dict:
         sources = []
 
     # -----------------------------------------------------------------------
-    # 3️⃣  Build the prompt for Groq
+    # 3️⃣  Add project context if a matching project is found
+    # -----------------------------------------------------------------------
+    db = SessionLocal()
+    try:
+        proj = db.query(Project).filter(Project.name.ilike(f"%{question}%")).first()
+        if proj:
+            proj_ctx = f"Project: {proj.name}"
+            if proj.description:
+                proj_ctx += f" – Description: {proj.description}"
+            if proj.tags:
+                proj_ctx += f" – Tags: {', '.join(proj.tags)}"
+            # Prepend project context so the model sees it before any doc excerpts
+            context = f"{proj_ctx}\n\n{context}" if context else proj_ctx
+    finally:
+        db.close()
+
+    # -----------------------------------------------------------------------
+    # 4️⃣  Build the prompt for Groq
     # -----------------------------------------------------------------------
     # The model is told explicitly that the context may be empty and must not be invented.
     prompt = f"""Answer the question using ONLY the document excerpts below.
 If the answer isn't in the documents, you may answer from general knowledge,
 but you must clearly state when you are not using any document context.
 
-DOCUMENTS:
 {context}
 
 QUESTION: {question}
@@ -217,7 +237,7 @@ QUESTION: {question}
 ANSWER:"""
 
     # -----------------------------------------------------------------------
-    # 4️⃣  Call Groq with robust error handling
+    # 5️⃣  Call Groq with robust error handling
     # -----------------------------------------------------------------------
     try:
         from groq import Groq
@@ -234,6 +254,6 @@ ANSWER:"""
         answer = "Sorry, I couldn't generate a response right now."
 
     # -----------------------------------------------------------------------
-    # 5️⃣  Return the structure the frontend expects
+    # 6️⃣  Return the structure the frontend expects
     # -----------------------------------------------------------------------
     return {"answer": answer, "sources": sources}
