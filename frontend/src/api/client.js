@@ -79,6 +79,6 @@ export const fullPipeline      = (id, file)  => {
 
 // ── AI Chat ────────────────────────────────────────────────────────────────
 export const chat = (messages) =>
-  api.post("/chat/", { messages }).then(r => r.data);
+  api.post("/api/chat/", { messages }).then(r => r.data);
 
 export default api;
