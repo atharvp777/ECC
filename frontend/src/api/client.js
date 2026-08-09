@@ -8,5 +8,8 @@ const api = axios.create({
 
 export const getBackendHealth = () => api.get("/").then((response) => response.data);
 export const getDashboardStats = () => api.get("/dashboard/stats").then(r => r.data);
+export const getTodayTasks = () => api.get("/tasks/today").then(r => r.data);
+export const getUpcomingTasks = (days = 7) => api.get(`/tasks/upcoming?days=${days}`).then(r => r.data);
+export const updateTask = (id, data) => api.patch(`/tasks/${id}`, data).then(r => r.data);
 
 export default api;
