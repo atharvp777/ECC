@@ -1,5 +1,5 @@
-from pydantic_settings import BaseSettings
 from pathlib import Path
+from pydantic_settings import BaseSettings
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -34,8 +34,20 @@ class Settings(BaseSettings):
         env_file = BASE_DIR / ".env"
         env_file_encoding = "utf-8"
 
+    @property
+    def is_configured(self) -> bool:
+        """Return True if the minimal set of credentials needed for core features are present."""
+        # Core features that must not be empty for the API to start serving requests
+        required = {
+            "APP_NAME",
+            "DATABASE_URL",
+            "GROQ_MODEL",
+        }
+        return all(getattr(self, name) for name in required)
+
 
 settings = Settings()
 
+# Ensure directories exist
 settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 settings.KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
