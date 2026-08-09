@@ -6,12 +6,17 @@ export default function Chat() {
   const [messages, setMessages] = useState([
     {
       role: "assistant",
-      content: "Hey Atharv 👋 I'm your Engineering Command Center AI.\n\nI have live access to your ",
+      content:
+        "Hey Atharv 👋 I'm your Engineering Command Center AI.\n\nI have live access to your ",
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef();
+
+  // Model / context indicator (static for now)
+  const modelIndicator = "llama-3.3-70b (Groq)";
+  const contextInfo = "Live project context loaded";
 
   useEffect(() => {
     bottomRef.current = document.getElementById("bottom");
@@ -23,8 +28,8 @@ export default function Chat() {
     }
   };
 
-  const send = async (text) => {
-    const userMsg = text || input.trim();
+  const send = async () => {
+    const userMsg = input.trim();
     if (!userMsg || loading) return;
     setInput("");
     const newMessages = [...messages, { role: "user", content: userMsg }];
@@ -33,57 +38,68 @@ export default function Chat() {
     try {
       const response = await fetch("http://127.0.0.1:8000/api/chat/", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),
       });
-      if (!response.ok) {
-        throw new Error("Network response was not ok");
-      }
       const data = await response.json();
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       setLoading(false);
       scrollToBottom();
-    } catch (error) {
-      console.error("Error sending message:", error);
+    } catch (err) {
+      console.error(err);
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Couldn't reach the backend." },
+        { role: "assistant", content: "Sorry, something went wrong." },
       ]);
       setLoading(false);
     }
   };
 
-  const handleKeyDown = (e) => {
-    if (e.key === "Enter" && input.trim()) {
-      send(input);
-    }
+  const clearChat = () => {
+    setMessages([
+      {
+        role: "assistant",
+        content:
+          "Hey Atharv 👋 I'm your Engineering Command Center AI.\n\nI have live access to your ",
+      },
+    ]);
   };
 
   return (
     <div className="chat-container">
+      {/* Header with model/context indicator and clear button */}
+      <div className="header">
+        <h2>AI Assistant</h2>
+        <div className="indicator">
+          <span>{modelIndicator}</span>
+          <span>{contextInfo}</span>
+        </div>
+        <button onClick={clearChat}>Clear Chat</button>
+      </div>
+
       <div className="messages">
-        {messages.map((msg, index) => (
-          <div key={index} className={`message ${msg.role}`}>
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`message ${msg.role}`}>
             {msg.content}
           </div>
         ))}
       </div>
+
       <div className="input-area">
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
           placeholder="Type your message..."
           disabled={loading}
+          id="bottom"
+          ref={bottomRef}
+          onKeyDown={(e) => e.key === "Enter" && send()}
         />
-        <button onClick={() => send(input)} disabled={loading || !input}>
+        <button onClick={send} disabled={loading || !input}>
           Send
         </button>
       </div>
     </div>
   );
 }
-
