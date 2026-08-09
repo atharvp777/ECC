@@ -163,10 +163,6 @@ def search_documents(query: str, top_k: int = TOP_K) -> list[dict]:
 
 
 def answer_from_docs(question: str) -> dict:
-    # Fallback for development when the Groq key is not configured
-    if not settings.GROQ_API_KEY:
-        return {"answer": "I'm currently unavailable (no Groq key).", "sources": []}
-
     if not settings.GROQ_API_KEY:
         return {"answer": "⚠ Groq API key not configured.", "sources": []}
 
