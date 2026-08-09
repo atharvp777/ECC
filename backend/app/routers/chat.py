@@ -32,4 +32,4 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     result = answer_from_docs(query)
 
     # Return exactly what the frontend expects
-    return {"answer": result["answer"], "sources": result["sources"]}
+    return {"reply": result["answer"], "sources": result["sources"]}
