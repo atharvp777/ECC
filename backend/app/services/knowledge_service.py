@@ -14,8 +14,11 @@ from collections import Counter
 from typing import Optional
 
 from app.core.config import settings
-from app.models.project import Project
 from app.core.database import SessionLocal
+from app.models.project import Project
+from app.models.task import Task, TaskStatus, TaskPriority
+from app.models.note import Note
+from app.models.document import Document
 
 INDEX_DIR   = settings.KNOWLEDGE_DIR / "faiss_index"
 CHUNKS_FILE = INDEX_DIR / "chunks.json"
@@ -176,8 +179,8 @@ def answer_from_docs(question: str) -> dict:
       * If relevant chunks are found, they are inserted into the prompt as context.
       * If no chunks are found, an empty‑context prompt is used – the model is
         instructed not to fabricate information.
-      * If a project matching the question is found, its basic details are
-        added to the context so the model can answer about it.
+      * If a project is identified from the question, its related information
+        (description, tags, tasks, notes, documents) is added to the context.
       * Calls Groq, handling any unexpected errors gracefully.
       * Always returns the same structure expected by the frontend.
     """
@@ -210,15 +213,63 @@ def answer_from_docs(question: str) -> dict:
     # -----------------------------------------------------------------------
     db = SessionLocal()
     try:
-        proj = db.query(Project).filter(Project.name.ilike(f"%{question}%")).first()
-        if proj:
-            proj_ctx = f"Project: {proj.name}"
+        # Simple keyword overlap to locate a project
+        q_tokens = set(re.findall(r'\b\w+\b', question.lower()))
+        best_proj = None
+        best_score = 0
+
+        for proj in db.query(Project).all():
+            # Match against project name and description
+            name_tokens = set(re.findall(r'\b\w+\b', proj.name.lower()))
+            desc_tokens = set(re.findall(r'\b\w+\b', (proj.description or "").lower()))
+            score = len(q_tokens & name_tokens | q_tokens & desc_tokens)
+            if score > best_score:
+                best_score = score
+                best_proj = proj
+
+        if best_proj:
+            # Build a concise project description
+            proj_ctx = f"Project: {best_proj.name}"
             if proj.description:
                 proj_ctx += f" – Description: {proj.description}"
             if proj.tags:
                 proj_ctx += f" – Tags: {', '.join(proj.tags)}"
-            # Prepend project context so the model sees it before any doc excerpts
-            context = f"{proj_ctx}\n\n{context}" if context else proj_ctx
+
+            # Retrieve up to 3 related tasks (excluding DONE)
+            tasks = (
+                db.query(Task)
+                .filter(
+                    Task.project_id == best_proj.id,
+                    Task.status != TaskStatus.DONE,
+                )
+                .order_by(TaskPriority.ASC)
+                .limit(3)
+                .all()
+            )
+            if tasks:
+                proj_ctx += "\n\nRelated Tasks:\n" + "\n".join(
+                    f"- {t.title or 'Untitled'}" for t in tasks
+                )
+
+            # Retrieve up to 3 notes
+            notes = db.query(Note).filter(Note.project_id == best_proj.id).limit(3).all()
+            if notes:
+                proj_ctx += "\n\nRelated Notes:\n" + "\n".join(
+                    f"- {n.title or 'Untitled'}" for n in notes
+                )
+
+            # Retrieve up to 3 documents linked to the project
+            docs = db.query(Document).filter(Document.project_id == best_proj.id).limit(3).all()
+            if docs:
+                proj_ctx += "\n\nRelated Documents:\n" + "\n".join(
+                    f"- {d.title or 'Untitled'}" for d in docs
+                )
+
+            # Prepend project context to the existing document context
+            if context:
+                context = proj_ctx + "\n\n" + context
+            else:
+                context = proj_ctx
     finally:
         db.close()
 
