@@ -76,3 +76,9 @@ export const fullPipeline      = (id, file)  => {
   const fd = new FormData(); fd.append("file", file);
   return api.post(`/meetings/intelligence/pipeline/${id}`, fd, { headers: { "Content-Type": "multipart/form-data" }, timeout: 120000 }).then(r => r.data);
 };
+
+// ── AI Chat ────────────────────────────────────────────────────────────────
+export const chat = (messages) =>
+  api.post("/chat/", { messages }).then(r => r.data);
+
+export default api;
