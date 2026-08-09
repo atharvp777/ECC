@@ -15,6 +15,10 @@ from typing import Optional, List, Dict, Any
 
 from app.core.config import settings
 
+# Import the Google API client library function used to build the service.
+# This import is required for type checking and to avoid the F821 undefined‑name error.
+from googleapiclient.discovery import build
+
 TOKEN_FILE = settings.KNOWLEDGE_DIR / "google_token.json"
 OAUTH_STATE_FILE = settings.KNOWLEDGE_DIR / "google_oauth_state.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]  # writable scope
@@ -157,8 +161,6 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
     creds = _load_credentials()
     if not creds:
         return []
-
-    from googleapiclient.discovery import build
 
     service  = build("calendar", "v3", credentials=creds)
     now      = datetime.now(timezone.utc)
