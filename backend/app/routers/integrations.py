@@ -37,12 +37,14 @@ def google_auth():
 
 
 @router.get("/google/callback")
-def google_callback(code: str = Query(...)):
-    """Google redirects here after user grants permission."""
+def google_callback(
+    code: str = Query(...),
+    state: str = Query(...)
+):
     from app.services.google_calendar import handle_callback
+
     try:
-        handle_callback(code)
-        # Redirect back to app (Tauri dev port)
+        handle_callback(code, state)
         return RedirectResponse("http://localhost:1420/#/integrations?google=connected")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"OAuth failed: {e}")

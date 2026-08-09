@@ -8,6 +8,7 @@ OAuth2 flow:
 """
 
 import json
+import secrets
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -15,6 +16,7 @@ from typing import Optional
 from app.core.config import settings
 
 TOKEN_FILE = settings.KNOWLEDGE_DIR / "google_token.json"
+OAUTH_STATE_FILE = settings.KNOWLEDGE_DIR / "google_oauth_state.json"
 SCOPES     = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
@@ -37,32 +39,57 @@ def _get_flow():
 
 
 def get_auth_url() -> str:
-    """Step 1 — generate Google OAuth2 consent URL."""
+    """Generate Google OAuth2 consent URL and preserve PKCE verifier."""
+
     if not settings.GOOGLE_CLIENT_ID:
         raise ValueError("GOOGLE_CLIENT_ID not configured in .env")
+
     flow = _get_flow()
-    url, _ = flow.authorization_url(
+
+    # Generate and preserve the PKCE verifier.
+    flow.code_verifier = secrets.token_urlsafe(64)
+
+    url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+
+    # Save the verifier so the callback can use the same one.
+    OAUTH_STATE_FILE.write_text(
+        json.dumps({
+            "state": state,
+            "code_verifier": flow.code_verifier,
+        })
+    )
+
     return url
 
 
 def handle_callback(code: str) -> bool:
-    """Step 2 — exchange auth code for tokens and save them."""
+    """Exchange Google OAuth code for tokens and save them."""
+
+    if not OAUTH_STATE_FILE.exists():
+        raise ValueError("Google OAuth state file not found")
+
+    oauth_state = json.loads(OAUTH_STATE_FILE.read_text())
+    code_verifier = oauth_state.get("code_verifier")
+
+    if not code_verifier:
+        raise ValueError("Google OAuth code verifier not found")
+
     flow = _get_flow()
-    flow.fetch_token(code=code)
+
+    # Restore the PKCE verifier generated during /google/auth.
+    flow.code_verifier = code_verifier
+
+    # Exchange authorization code for tokens.
+    flow.fetch_token(
+        code=code,
+        code_verifier=code_verifier,
+    )
+
     creds = flow.credentials
-    TOKEN_FILE.write_text(json.dumps({
-        "token":         creds.token,
-        "refresh_token": creds.refresh_token,
-        "token_uri":     creds.token_uri,
-        "client_id":     creds.client_id,
-        "client_secret": creds.client_secret,
-        "scopes":        list(creds.scopes),
-    }))
-    return True
 
 
 def _load_credentials():
