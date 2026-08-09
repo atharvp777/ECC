@@ -163,18 +163,51 @@ def search_documents(query: str, top_k: int = TOP_K) -> list[dict]:
 
 
 def answer_from_docs(question: str) -> dict:
+    """
+    Returns a dict with two keys:
+        - "reply": the generated answer string
+        - "sources": list of document titles used as context (may be empty)
+
+    Behaviour:
+      * If GROQ_API_KEY is missing, returns a friendly warning.
+      * Searches the TF‑IDF knowledge base for relevant chunks.
+      * If relevant chunks are found, they are inserted into the prompt as context.
+      * If no chunks are found, an empty‑context prompt is used – the model is
+        instructed not to fabricate information.
+      * Calls Groq, handling any unexpected errors gracefully.
+      * Always returns the same structure expected by the frontend.
+    """
+    # -----------------------------------------------------------------------
+    # 1️⃣  Guard‑clause when the Groq key is not configured
+    # -----------------------------------------------------------------------
     if not settings.GROQ_API_KEY:
-        return {"answer": "⚠ Groq API key not configured.", "sources": []}
+        return {"reply": "⚠ Groq API key not configured.", "sources": []}
 
+    # -----------------------------------------------------------------------
+    # 2️⃣  Retrieve relevant document chunks
+    # -----------------------------------------------------------------------
     chunks = search_documents(question)
-    if not chunks:
-        return {"answer": "No relevant documents found. Upload some files first.", "sources": []}
+    context = ""
+    sources: list[str] = []
 
-    context = "\n\n---\n\n".join(
-        f"[Source: {c['title']}]\n{c['text']}" for c in chunks
-    )
+    if chunks:
+        # Build a readable context string from the retrieved chunks
+        context = "\n\n---\n\n".join(
+            f"[Source: {c['title']}]\n{c['text']}" for c in chunks
+        )
+        sources = list({c["title"] for c in chunks})
+    else:
+        # No relevant chunks – still proceed, but make it clear that context is empty
+        context = "(No document context provided.)"
+        sources = []
+
+    # -----------------------------------------------------------------------
+    # 3️⃣  Build the prompt for Groq
+    # -----------------------------------------------------------------------
+    # The model is told explicitly that the context may be empty and must not be invented.
     prompt = f"""Answer the question using ONLY the document excerpts below.
-If the answer isn't in the documents, say so clearly.
+If the answer isn't in the documents, you may answer from general knowledge,
+but you must clearly state when you are not using any document context.
 
 DOCUMENTS:
 {context}
@@ -183,13 +216,24 @@ QUESTION: {question}
 
 ANSWER:"""
 
-    from groq import Groq
-    client   = Groq(api_key=settings.GROQ_API_KEY)
-    response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=800,
-        temperature=0.2,
-    )
-    sources = list({c["title"] for c in chunks})
-    return {"answer": response.choices[0].message.content, "sources": sources}
+    # -----------------------------------------------------------------------
+    # 4️⃣  Call Groq with robust error handling
+    # -----------------------------------------------------------------------
+    try:
+        from groq import Groq
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+            temperature=0.2,
+        )
+        answer = response.choices[0].message.content.strip()
+    except Exception:
+        # Any unexpected error (network, API limit, etc.) – return a safe fallback
+        answer = "Sorry, I couldn't generate a response right now."
+
+    # -----------------------------------------------------------------------
+    # 5️⃣  Return the structure the frontend expects
+    # -----------------------------------------------------------------------
+    return {"reply": answer, "sources": sources}
