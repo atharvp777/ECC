@@ -7,5 +7,6 @@ const api = axios.create({
 });
 
 export const getBackendHealth = () => api.get("/").then((response) => response.data);
+export const getDashboardStats = () => api.get("/dashboard/stats").then(r => r.data);
 
 export default api;
