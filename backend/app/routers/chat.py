@@ -18,9 +18,9 @@ class ChatResponse(BaseModel):
     reply: str
 
 @router.post("/", response_model=ChatResponse)
-def chat(payload: ChatRequest, db: Session = Depends(get_db)):
+async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     messages = [m.model_dump() for m in payload.messages]
-    reply = chat_with_ai(messages, db)
+    reply = await chat_with_ai(messages, db)
     return ChatResponse(reply=reply)
 
 @router.get("/context-preview")
