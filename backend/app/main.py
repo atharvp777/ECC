@@ -7,7 +7,7 @@ from app.core.database import engine, Base
 # Import models so SQLAlchemy can discover them for table creation
 import app.models  # noqa: F401
 
-from app.routers import projects, tasks, notes, documents, meetings, dashboard, chat, knowledge, integrations, meeting_intelligence
+from app.routers import projects, tasks, notes, documents, meetings, dashboard, chat, knowledge, integrations, meeting_intelligence, tools
 
 # Create all tables on startup
 Base.metadata.create_all(bind=engine)
@@ -36,6 +36,7 @@ app.include_router(chat.router)   # <-- ensure the AI chat endpoint is registere
 app.include_router(knowledge.router)
 app.include_router(integrations.router)
 app.include_router(meeting_intelligence.router)
+app.include_router(tools.router)   # <-- register the new tools router
 
 @app.get("/", tags=["health"])
 def health_check():
