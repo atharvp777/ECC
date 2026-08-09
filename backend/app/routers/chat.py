@@ -4,7 +4,7 @@ from app.services.knowledge_service import answer_from_docs
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/chat", tags=["ai"])
+router = APIRouter(prefix="/api/chat", tags=["ai"])
 
 # -------------------------------------------------
 # Request / Response models
