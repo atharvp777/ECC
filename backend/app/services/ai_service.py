@@ -1,14 +1,16 @@
 from groq import Groq
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
+from typing import List, Optional
 
 from app.core.config import settings
-from app.models.task import Task, TaskStatus, TaskPriority
-from app.models.project import Project, ProjectStatus
-from app.models.note import Note
-from app.models.meeting import Meeting
+from app.core.database import get_db
+from app.services.tool_dispatcher import execute_tool
+from app.services.google_calendar import get_upcoming_events, is_connected
 
-
+# ----------------------------------------------------------------------
+# System prompt & context helpers (unchanged from previous version)
+# ----------------------------------------------------------------------
 SYSTEM_PROMPT = """You are the Engineering Command Center AI — a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
 You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers — not generic ones.
@@ -22,24 +24,30 @@ Your personality:
 
 When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
 
-
 def _build_context(db: Session) -> str:
     now = datetime.now(timezone.utc)
     lines = [f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M UTC')}) ---\n"]
 
-    projects = db.query(Project).filter(Project.status == ProjectStatus.ACTIVE).all()
+    from app.models.project import Project
+    from app.models.task import Task
+    from app.models.note import Note
+    from app.models.meeting import Meeting
+
+    projects = db.query(Project).filter(Project.status == "ACTIVE").all()
     if projects:
         lines.append("## Active Projects")
         for p in projects:
             task_count = len(p.tasks)
-            done = sum(1 for t in p.tasks if t.status == TaskStatus.DONE)
+            done = sum(1 for t in p.tasks if t.status == "DONE")
             lines.append(f"- **{p.name}** [{p.category}] — {done}/{task_count} tasks done")
         lines.append("")
 
     overdue = (
         db.query(Task)
-        .filter(Task.deadline < now, Task.status != TaskStatus.DONE)
-        .order_by(Task.deadline.asc()).limit(10).all()
+        .filter(Task.deadline < now, Task.status != "DONE")
+        .order_by(Task.deadline.asc())
+        .limit(10)
+        .all()
     )
     if overdue:
         lines.append("## Overdue Tasks")
@@ -52,8 +60,10 @@ def _build_context(db: Session) -> str:
     week_end = now + timedelta(days=7)
     upcoming = (
         db.query(Task)
-        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != TaskStatus.DONE)
-        .order_by(Task.deadline.asc()).limit(15).all()
+        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != "DONE")
+        .order_by(Task.deadline.asc())
+        .limit(15)
+        .all()
     )
     if upcoming:
         lines.append("## Upcoming This Week")
@@ -65,8 +75,9 @@ def _build_context(db: Session) -> str:
 
     critical = (
         db.query(Task)
-        .filter(Task.priority == TaskPriority.CRITICAL, Task.status != TaskStatus.DONE)
-        .limit(5).all()
+        .filter(Task.priority == "CRITICAL", Task.status != "DONE")
+        .limit(5)
+        .all()
     )
     if critical:
         lines.append("## Critical Open Tasks")
@@ -91,8 +102,8 @@ def _build_context(db: Session) -> str:
 
     lines.append("--- END CONTEXT ---\n")
 
+    # ---- Calendar events (if connected) ----
     try:
-        from app.services.google_calendar import get_upcoming_events, is_connected
         if is_connected():
             events = get_upcoming_events(days=7, max_results=10)
             if events:
@@ -106,10 +117,12 @@ def _build_context(db: Session) -> str:
     return "\n".join(lines)
 
 
-def _maybe_rag(user_message: str) -> str | None:
-    triggers = ["/doc", "rulebook", "datasheet", "according to the", "in the document",
-                "specification", "what does the", "fmea", "regulation", "requirement",
-                "clause", "section", "page", "standard"]
+def _maybe_rag(user_message: str) -> Optional[str]:
+    triggers = [
+        "/doc", "rulebook", "datasheet", "according to the", "in the document",
+        "specification", "what does the", "fmea", "regulation", "requirement",
+        "clause", "section", "page", "standard"
+    ]
     lower = user_message.lower()
     if any(t in lower for t in triggers):
         from app.services.knowledge_service import answer_from_docs
@@ -119,30 +132,101 @@ def _maybe_rag(user_message: str) -> str | None:
     return None
 
 
-def chat_with_ai(messages: list[dict], db: Session) -> str:
-    if not settings.GROQ_API_KEY:
-        return (
-            "⚠ Groq API key not configured. Add `GROQ_API_KEY=gsk_...` to your `.env` file "
-            "in the backend folder, then restart the server.\n\n"
-            "Get a free key at: https://console.groq.com"
-        )
+# ----------------------------------------------------------------------
+# Tool‑call detection & execution
+# ----------------------------------------------------------------------
+import re, json
 
-    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    rag_answer = _maybe_rag(last_user)
-    if rag_answer:
-        return rag_answer
+def extract_tool_call(message: str) -> Optional[dict]:
+    """
+    Detect a tool request of the form:
+        /tool <tool_name> <json_args>
+    The JSON part must be a valid object.
+    """
+    m = re.search(r'^/tool\s+(\w+)\s+(.+)$', message, re.DOTALL | re.MULTILINE)
+    if not m:
+        return None
+    tool_name = m.group(1)
+    args_str = m.group(2)
+    try:
+        args = json.loads(args_str)
+        return {"tool": tool_name, "args": args}
+    except json.JSONDecodeError:
+        return None
+    return None
 
-    client  = Groq(api_key=settings.GROQ_API_KEY)
+
+def chat_with_ai(messages: List[dict], db: Session) -> str:
+    """
+    Main entry point used by the chat router.
+    1️⃣ Build the normal context (projects, tasks, notes, calendar).
+    2️⃣ Look for a ``/tool`` directive in the latest user message.
+    3️⃣ If present, dispatch to ``execute_tool`` and turn the result into
+       a natural‑language reply.
+    4️⃣ Otherwise fall back to the original LLM call.
+    """
+    # ---- 1️⃣ Build context -------------------------------------------------
     context = _build_context(db)
 
+    # ---- 2️⃣ Detect tool request -------------------------------------------
+    last_user = next(
+        (m["content"] for m in reversed(messages) if m["role"] == "user"),
+        "",
+    )
+    tool_call = extract_tool_call(last_user)
+
+    if tool_call:
+        tool_name = tool_call["tool"]
+        args = tool_call["args"]
+
+        # ---- 3️⃣ Execute the tool -------------------------------------------
+        try:
+            result = execute_tool(tool_name, args, db)
+
+            # ---- 4️⃣ Render a concise, user‑friendly reply --------------------
+            reply_map = {
+                "list_projects": lambda: f"Projects: {', '.join(p.name for p in result['data'])}",
+                "create_project": lambda: f"Created project “{result['data'].name}”.",
+                "update_project": lambda: f"Updated project {result['data'].id}.",
+                "list_tasks": lambda: (
+                    "Tasks: " + "; ".join(f"[{t.priority.upper()}] {t.title}"
+                                            for t in result["data"])
+                    if result["data"]
+                    else "No tasks found."
+                ),
+                "create_task": lambda: f"Created task “{result['data'].title}” in project {result['data'].project_id}.",
+                "update_task": lambda: f"Updated task {result['data'].id}.",
+                "complete_task": lambda: f"Marked task {result['data'].id} as completed.",
+                "list_calendar_events": lambda: (
+                    "Calendar events: " + "; ".join(f"{e['title']} ({e['start'][:10]})"
+                                                    for e in result["data"])
+                    if result["data"]
+                    else "No upcoming events."
+                ),
+                "create_calendar_event": lambda: f"Created calendar event “{result['data']['summary']}” starting at {result['data']['start']}.",
+                "update_calendar_event": lambda: f"Updated calendar event {result['data']['id']}.",
+                "delete_calendar_event": lambda: f"Deleted calendar event {result['data']['event_id']}.",
+            }
+
+            render = reply_map.get(tool_name)
+            if render:
+                return render()
+
+            # Fallback for any other tool
+            return "Tool executed successfully."
+        except Exception as exc:
+            return f"Error executing tool: {str(exc)}"
+
+    # ---- 4️⃣ No tool request – fall back to LLM ----------------------------
+    client = Groq(api_key=settings.GROQ_API_KEY)
+    full_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + context},
+        *messages,
+    ]
     response = client.chat.completions.create(
         model=settings.GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT + context},
-            *messages,
-        ],
+        messages=full_messages,
         max_tokens=1024,
         temperature=0.7,
     )
-
     return response.choices[0].message.content
