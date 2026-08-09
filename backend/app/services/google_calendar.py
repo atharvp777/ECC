@@ -11,13 +11,13 @@ import json
 import secrets
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from app.core.config import settings
 
 TOKEN_FILE = settings.KNOWLEDGE_DIR / "google_token.json"
 OAUTH_STATE_FILE = settings.KNOWLEDGE_DIR / "google_oauth_state.json"
-SCOPES     = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]  # writable scope
 
 
 def _get_flow():
@@ -152,7 +152,7 @@ def _load_credentials():
     return creds
 
 
-def get_upcoming_events(days: int = 14, max_results: int = 20) -> list[dict]:
+def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
     """Step 3 — fetch upcoming events from primary calendar."""
     creds = _load_credentials()
     if not creds:
@@ -192,3 +192,71 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> list[dict]:
 
 def is_connected() -> bool:
     return TOKEN_FILE.exists()
+
+
+# ----------------------------------------------------------------------
+# Write operations (create / update / delete)
+# ----------------------------------------------------------------------
+def _get_service():
+    """Return an authenticated Google Calendar service instance."""
+    creds = _load_credentials()
+    if not creds:
+        raise PermissionError("Google Calendar not connected – please re‑authorize.")
+    return build("calendar", "v3", credentials=creds)
+
+
+def create_calendar_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a new event. Returns the created event representation."""
+    service = _get_service()
+    try:
+        created = service.events().insert(calendarId="primary", body=event_data).execute()
+        return {
+            "id": created.get("id"),
+            "summary": created.get("summary"),
+            "start": created.get("start"),
+            "end": created.get("end"),
+            "status": created.get("status"),
+        }
+    except Exception as exc:
+        # If the error is due to insufficient scope, surface a clear message.
+        if "insufficient" in str(exc).lower():
+            raise PermissionError(
+                "Calendar write access not granted. Please re‑authorize with full Calendar scope."
+            ) from exc
+        raise exc
+
+
+def update_calendar_event(event_id: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Update an existing event. Returns the updated event representation."""
+    service = _get_service()
+    try:
+        updated = service.events().update(
+            calendarId="primary", eventId=event_id, body=event_data
+        ).execute()
+        return {
+            "id": updated.get("id"),
+            "summary": updated.get("summary"),
+            "start": updated.get("start"),
+            "end": updated.get("end"),
+            "status": updated.get("status"),
+        }
+    except Exception as exc:
+        if "insufficient" in str(exc).lower():
+            raise PermissionError(
+                "Calendar write access not granted. Please re‑authorize with full Calendar scope."
+            ) from exc
+        raise exc
+
+
+def delete_calendar_event(event_id: str) -> Dict[str, str]:
+    """Delete an existing event. Returns a confirmation message."""
+    service = _get_service()
+    try:
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        return {"status": "deleted", "event_id": event_id}
+    except Exception as exc:
+        if "insufficient" in str(exc).lower():
+            raise PermissionError(
+                "Calendar write access not granted. Please re‑authorize with full Calendar scope."
+            ) from exc
+        raise exc
