@@ -69,32 +69,47 @@ def get_auth_url() -> str:
 def handle_callback(code: str, state: str) -> bool:
     """Exchange Google OAuth code for tokens and save them."""
 
+    # Ensure the state file exists
     if not OAUTH_STATE_FILE.exists():
         raise ValueError("Google OAuth state file not found")
 
-    oauth_state = json.loads(OAUTH_STATE_FILE.read_text())
+    # Load stored state and verifier
+    try:
+        oauth_state = json.loads(OAUTH_STATE_FILE.read_text())
+    except json.JSONDecodeError:
+        OAUTH_STATE_FILE.unlink(missing_ok=True)
+        raise ValueError("Corrupted OAuth state file")
+
     saved_state = oauth_state.get("state")
     saved_verifier = oauth_state.get("code_verifier")
 
-    # Validate that the state returned by Google matches the one we stored.
+    # Validate state matches what we expect
     if saved_state != state:
-        # Clean up any stale state file to avoid repeated mismatches.
+        # Clean up any stale state file to avoid repeated mismatches
         OAUTH_STATE_FILE.unlink(missing_ok=True)
         raise ValueError("State mismatch – possible replay attack or stale session")
+    if not saved_verifier:
+        OAUTH_STATE_FILE.unlink(missing_ok=True)
+        raise ValueError("Missing code verifier in stored state")
 
+    # Build the flow again so we can set the verifier
     flow = _get_flow()
     # Restore the exact PKCE verifier that was generated for this authorization attempt.
     flow.code_verifier = saved_verifier
 
     # Exchange the authorization code for tokens.
-    flow.fetch_token(
-        code=code,
-        code_verifier=saved_verifier,
-    )
-
-    creds = flow.credentials
+    try:
+        flow.fetch_token(
+            code=code,
+            code_verifier=saved_verifier,
+        )
+    except Exception as exc:
+        # Clean up state file on any failure
+        OAUTH_STATE_FILE.unlink(missing_ok=True)
+        raise exc
 
     # Persist the credentials (including refreshed token if applicable).
+    creds = flow.credentials
     data = {
         "token": creds.token,
         "refresh_token": creds.refresh_token,
