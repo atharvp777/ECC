@@ -55,7 +55,7 @@ def get_auth_url() -> str:
         prompt="consent",
     )
 
-    # Save the verifier so the callback can use the same one.
+    # Save the verifier (and the generated state) so the callback can use the same one.
     OAUTH_STATE_FILE.write_text(
         json.dumps({
             "state": state,
@@ -66,30 +66,49 @@ def get_auth_url() -> str:
     return url
 
 
-def handle_callback(code: str) -> bool:
+def handle_callback(code: str, state: str) -> bool:
     """Exchange Google OAuth code for tokens and save them."""
 
     if not OAUTH_STATE_FILE.exists():
         raise ValueError("Google OAuth state file not found")
 
     oauth_state = json.loads(OAUTH_STATE_FILE.read_text())
-    code_verifier = oauth_state.get("code_verifier")
+    saved_state = oauth_state.get("state")
+    saved_verifier = oauth_state.get("code_verifier")
 
-    if not code_verifier:
-        raise ValueError("Google OAuth code verifier not found")
+    # Validate that the state returned by Google matches the one we stored.
+    if saved_state != state:
+        # Clean up any stale state file to avoid repeated mismatches.
+        OAUTH_STATE_FILE.unlink(missing_ok=True)
+        raise ValueError("State mismatch – possible replay attack or stale session")
 
     flow = _get_flow()
+    # Restore the exact PKCE verifier that was generated for this authorization attempt.
+    flow.code_verifier = saved_verifier
 
-    # Restore the PKCE verifier generated during /google/auth.
-    flow.code_verifier = code_verifier
-
-    # Exchange authorization code for tokens.
+    # Exchange the authorization code for tokens.
     flow.fetch_token(
         code=code,
-        code_verifier=code_verifier,
+        code_verifier=saved_verifier,
     )
 
     creds = flow.credentials
+
+    # Persist the credentials (including refreshed token if applicable).
+    data = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes,
+    }
+    TOKEN_FILE.write_text(json.dumps(data))
+
+    # Remove the state file – it is no longer needed.
+    OAUTH_STATE_FILE.unlink(missing_ok=True)
+
+    return True
 
 
 def _load_credentials():

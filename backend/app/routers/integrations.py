@@ -8,7 +8,7 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 # ══════════════════════════════════════════════════════════
 # STATUS
-# ══════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 
 @router.get("/status")
 def integrations_status():
@@ -21,7 +21,7 @@ def integrations_status():
     }
 
 
-# ══════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════
 # GOOGLE CALENDAR
 # ══════════════════════════════════════════════════════════
 
@@ -41,6 +41,7 @@ def google_callback(
     code: str = Query(...),
     state: str = Query(...)
 ):
+    """Handle the Google OAuth2 callback and store tokens."""
     from app.services.google_calendar import handle_callback
 
     try:
