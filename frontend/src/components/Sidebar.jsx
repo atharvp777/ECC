@@ -1,3 +1,4 @@
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, FolderKanban, CheckSquare,
@@ -28,6 +29,29 @@ export default function Sidebar() {
   const location = useLocation();
   const navigate = useNavigate();
 
+  const [backendDetected, setBackendDetected] = useState(false);
+  useEffect(() => {
+    const checkBackend = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/', {
+          method: 'GET',
+        });
+        setBackendDetected(response.ok);
+      } catch {
+        setBackendDetected(false);
+      }
+    };
+    checkBackend();
+  }, []);
+
+  if (!backendDetected) {
+    return (
+      <div className="sidebar-notice">
+        Backend not detected. Run start.bat in the backend folder to connect.
+      </div>
+    );
+  }
+
   return (
     <nav className="sidebar">
       <div className="sidebar-logo">
@@ -35,7 +59,6 @@ export default function Sidebar() {
           <Zap size={16} color="var(--accent)" />
           <h1>Command Center</h1>
         </div>
-        <p>Atharv · Pegasus Racing</p>
       </div>
 
       {NAV.map(group => (
