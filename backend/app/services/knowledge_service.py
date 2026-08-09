@@ -165,7 +165,7 @@ def search_documents(query: str, top_k: int = TOP_K) -> list[dict]:
 def answer_from_docs(question: str) -> dict:
     """
     Returns a dict with two keys:
-        - "reply": the generated answer string
+        - "answer": the generated answer string
         - "sources": list of document titles used as context (may be empty)
 
     Behaviour:
@@ -181,7 +181,7 @@ def answer_from_docs(question: str) -> dict:
     # 1️⃣  Guard‑clause when the Groq key is not configured
     # -----------------------------------------------------------------------
     if not settings.GROQ_API_KEY:
-        return {"reply": "⚠ Groq API key not configured.", "sources": []}
+        return {"answer": "⚠ Groq API key not configured.", "sources": []}
 
     # -----------------------------------------------------------------------
     # 2️⃣  Retrieve relevant document chunks
@@ -236,4 +236,4 @@ ANSWER:"""
     # -----------------------------------------------------------------------
     # 5️⃣  Return the structure the frontend expects
     # -----------------------------------------------------------------------
-    return {"reply": answer, "sources": sources}
+    return {"answer": answer, "sources": sources}
