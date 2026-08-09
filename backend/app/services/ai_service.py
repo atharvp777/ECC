@@ -1,0 +1,148 @@
+from groq import Groq
+from sqlalchemy.orm import Session
+from datetime import datetime, timezone, timedelta
+
+from app.core.config import settings
+from app.models.task import Task, TaskStatus, TaskPriority
+from app.models.project import Project, ProjectStatus
+from app.models.note import Note
+from app.models.meeting import Meeting
+
+
+SYSTEM_PROMPT = """You are the Engineering Command Center AI — a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
+
+You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers — not generic ones.
+
+Your personality:
+- Direct and efficient. No filler. No "Great question!".
+- Think like a senior engineer: practical, prioritization-aware, aware of deadlines.
+- When you see overdue tasks or critical items, flag them proactively.
+- Use bullet points for lists, plain prose for explanations.
+- You know about: eBAJA, AgroVault, Formula SAE EV rules, mechanical engineering, Python, software development.
+
+When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
+
+
+def _build_context(db: Session) -> str:
+    now = datetime.now(timezone.utc)
+    lines = [f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M UTC')}) ---\n"]
+
+    projects = db.query(Project).filter(Project.status == ProjectStatus.ACTIVE).all()
+    if projects:
+        lines.append("## Active Projects")
+        for p in projects:
+            task_count = len(p.tasks)
+            done = sum(1 for t in p.tasks if t.status == TaskStatus.DONE)
+            lines.append(f"- **{p.name}** [{p.category}] — {done}/{task_count} tasks done")
+        lines.append("")
+
+    overdue = (
+        db.query(Task)
+        .filter(Task.deadline < now, Task.status != TaskStatus.DONE)
+        .order_by(Task.deadline.asc()).limit(10).all()
+    )
+    if overdue:
+        lines.append("## Overdue Tasks")
+        for t in overdue:
+            days = (now - t.deadline).days
+            proj = t.project.name if t.project else "No project"
+            lines.append(f"- [{t.priority.upper()}] {t.title} — {days}d overdue ({proj})")
+        lines.append("")
+
+    week_end = now + timedelta(days=7)
+    upcoming = (
+        db.query(Task)
+        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != TaskStatus.DONE)
+        .order_by(Task.deadline.asc()).limit(15).all()
+    )
+    if upcoming:
+        lines.append("## Upcoming This Week")
+        for t in upcoming:
+            dl = t.deadline.strftime("%b %d")
+            proj = t.project.name if t.project else "Personal"
+            lines.append(f"- [{t.priority.upper()}] {t.title} — due {dl} ({proj})")
+        lines.append("")
+
+    critical = (
+        db.query(Task)
+        .filter(Task.priority == TaskPriority.CRITICAL, Task.status != TaskStatus.DONE)
+        .limit(5).all()
+    )
+    if critical:
+        lines.append("## Critical Open Tasks")
+        for t in critical:
+            lines.append(f"- {t.title}" + (f" — due {t.deadline.strftime('%b %d')}" if t.deadline else ""))
+        lines.append("")
+
+    notes = db.query(Note).order_by(Note.updated_at.desc()).limit(5).all()
+    if notes:
+        lines.append("## Recent Notes")
+        for n in notes:
+            lines.append(f"- {n.title}")
+        lines.append("")
+
+    recent_meetings = db.query(Meeting).order_by(Meeting.held_at.desc()).limit(3).all()
+    if recent_meetings:
+        lines.append("## Recent Meetings")
+        for m in recent_meetings:
+            pending = sum(1 for a in m.action_items if not a.is_done)
+            lines.append(f"- {m.title} ({m.held_at.strftime('%b %d')}) — {pending} open action items")
+        lines.append("")
+
+    lines.append("--- END CONTEXT ---\n")
+
+    try:
+        from app.services.google_calendar import get_upcoming_events, is_connected
+        if is_connected():
+            events = get_upcoming_events(days=7, max_results=10)
+            if events:
+                lines.insert(-1, "## Upcoming Calendar Events (7 days)")
+                for e in events:
+                    lines.insert(-1, f"- {e['title']} — {e['start'][:10]}")
+                lines.insert(-1, "")
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+def _maybe_rag(user_message: str) -> str | None:
+    triggers = ["/doc", "rulebook", "datasheet", "according to the", "in the document",
+                "specification", "what does the", "fmea", "regulation", "requirement",
+                "clause", "section", "page", "standard"]
+    lower = user_message.lower()
+    if any(t in lower for t in triggers):
+        from app.services.knowledge_service import answer_from_docs
+        result = answer_from_docs(user_message.replace("/doc", "").strip())
+        if result["sources"]:
+            return f"{result['answer']}\n\n*Sources: {', '.join(result['sources'])}*"
+    return None
+
+
+def chat_with_ai(messages: list[dict], db: Session) -> str:
+    if not settings.GROQ_API_KEY:
+        return (
+            "⚠ Groq API key not configured. Add `GROQ_API_KEY=gsk_...` to your `.env` file "
+            "in the backend folder, then restart the server.\n\n"
+            "Get a free key at: https://console.groq.com"
+        )
+
+    last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    rag_answer = _maybe_rag(last_user)
+    if rag_answer:
+        return rag_answer
+
+    client  = Groq(api_key=settings.GROQ_API_KEY)
+    context = _build_context(db)
+
+    response = client.chat.completions.create(
+        model=settings.GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT + context},
+            *messages,
+        ],
+        max_tokens=1024,
+        temperature=0.7,
+    )
+
+    return response.choices[0].message.content

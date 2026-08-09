@@ -1,0 +1,21 @@
+# Editor metadata
+.vscode/
+.idea/
+
+# Runtime data and credentials
+backend/.env
+backend/venv/
+backend/ecc.db
+backend/ecc.db-*
+backend/uploads/
+backend/knowledge/
+backend/*.log
+backend/*.pid
+
+# JavaScript and Tauri build output
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+frontend/*.log
+frontend/*.pid
+frontend/_archive_ecc-frontend-v1/
