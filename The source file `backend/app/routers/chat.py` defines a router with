@@ -1,0 +1,4 @@
+router = APIRouter(prefix="/chat", tags=["ai"])
+@router.post("/", response_model=ChatResponse)
+def chat(payload: ChatRequest, db: Session = Depends(get_db)):
+    ...
