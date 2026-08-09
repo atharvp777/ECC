@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     KNOWLEDGE_DIR: Path = Path(__file__).resolve().parents[3] / "knowledge"
 
     class Config:
-        env_file = Path(__file__).resolve().parents[3] / ".env"
+        env_file = Path(__file__).resolve().parents[2] / ".env"
         env_file_encoding = "utf-8"
 
     @property
