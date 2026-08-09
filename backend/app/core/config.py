@@ -1,15 +1,12 @@
 from pathlib import Path
-from pydantic_settings import BaseSettings
-
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
-
+from pydantic_settings import BaseSettings, Field
 
 class Settings(BaseSettings):
     APP_NAME: str = "Engineering Command Center"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 
-    DATABASE_URL: str = f"sqlite:///{BASE_DIR}/ecc.db"
+    DATABASE_URL: str = f"sqlite:///{Path(__file__).resolve().parents[3]}/ecc.db"
 
     # Groq — free API, replaces OpenAI for all chat + summarization
     GROQ_API_KEY: str = ""
@@ -27,11 +24,11 @@ class Settings(BaseSettings):
     GITHUB_PAT: str = ""
     GITHUB_USERNAME: str = ""
 
-    UPLOADS_DIR: Path = BASE_DIR / "uploads"
-    KNOWLEDGE_DIR: Path = BASE_DIR / "knowledge"
+    UPLOADS_DIR: Path = Path(__file__).resolve().parents[3] / "uploads"
+    KNOWLEDGE_DIR: Path = Path(__file__).resolve().parents[3] / "knowledge"
 
     class Config:
-        env_file = BASE_DIR / ".env"
+        env_file = Path(__file__).resolve().parents[3] / ".env"
         env_file_encoding = "utf-8"
 
     @property
