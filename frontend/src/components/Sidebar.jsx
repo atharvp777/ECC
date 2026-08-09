@@ -4,6 +4,7 @@ import {
   LayoutDashboard, FolderKanban, CheckSquare,
   FileText, FileArchive, Users, Settings, Zap, MessageSquare, Plug,
 } from "lucide-react";
+import { API_BASE_URL } from '../config';
 
 const NAV = [
   { label: "Main", items: [
@@ -33,7 +34,7 @@ export default function Sidebar() {
   useEffect(() => {
     const checkBackend = async () => {
       try {
-        const response = await fetch('http://localhost:8000/', {
+        const response = await fetch(`${API_BASE_URL}/`, {
           method: 'GET',
         });
         setBackendDetected(response.ok);
