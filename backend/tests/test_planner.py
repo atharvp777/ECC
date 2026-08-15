@@ -71,8 +71,10 @@ def test_plan_tool_call_live_groq_smoke():
     context = "LIVE CONTEXT\n---\nNo projects listed yet\n---\nEND CONTEXT"
     with patch("app.services.ai_service.Groq") as mock_groq_class:
         mock_client = MagicMock()
-        # The real Groq call would return a JSON string; we let it through
-        mock_client.chat.completions.create.return_value.choices[0].message.content
+        # Configure the mocked response to return valid JSON for create_task
+        mock_client.chat.completions.create.return_value.choices = [MagicMock()]
+        mock_client.chat.completions.create.return_value.choices[0].message = MagicMock()
+        mock_client.chat.completions.create.return_value.choices[0].message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
         mock_groq_class.return_value = mock_client
 
         result = plan_tool_call(user_msg, context)
