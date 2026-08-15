@@ -69,7 +69,7 @@ class DeleteCalendarEventRequest(BaseModel):
 
 
 # ---------- Wrapper implementations ----------
-def list_projects(db: Session, _: ListProjectsRequest) -> Dict[str, Any]:
+def list_projects(db: Session, req: ListProjectsRequest) -> Dict[str, Any]:
     projects = db.query(Project).filter(Project.status == "ACTIVE").all()
     return {"data": projects}
 
@@ -95,7 +95,7 @@ def update_project(db: Session, req: UpdateProjectRequest) -> Dict[str, Any]:
     return {"data": proj}
 
 
-def list_tasks(db: Session, _: ListTasksRequest) -> Dict[str, Any]:
+def list_tasks(db: Session, req: ListTasksRequest) -> Dict[str, Any]:
     tasks = db.query(Task).all()
     return {"data": tasks}
 
@@ -141,7 +141,7 @@ def complete_task(db: Session, req: CompleteTaskRequest) -> Dict[str, Any]:
     return {"data": task}
 
 
-def list_calendar_events(db: Session, _: ListCalendarEventsRequest) -> Dict[str, Any]:
+def list_calendar_events(db: Session, req: ListCalendarEventsRequest) -> Dict[str, Any]:
     events = gc_get_upcoming_events(days=7, max_results=20)
     return {"data": events}
 
