@@ -150,6 +150,16 @@ def test_chat_explicit_create_task_path(db_session):
         mock_client.chat.completions.create.return_value = mock_completion
         mock_groq.return_value = mock_client
 
+        # Verify planner result before invoking chat_with_ai
+        planned = plan_tool_call(
+            "create a task called TestTask for TestProj",
+            "## Active Projects\n- **TestProj** [Personal] — 0/0 tasks done"
+        )
+        assert planned is not None
+        assert planned["tool"] == "create_task"
+        assert planned["args"]["title"] == "TestTask"
+        assert planned["args"]["project_id"] == proj.id
+
         # Create a Task object to be returned by execute_tool
         task = Task(
             title="TestTask",
@@ -170,10 +180,11 @@ def test_chat_explicit_create_task_path(db_session):
             reply = chat_with_ai(messages, db_session)
             # The reply should mention that the task was created
             assert "created" in reply.lower()
-            # Ensure execute_tool was called with the correct tool name
+            # Ensure execute_tool was called with the correct tool name and arguments
             mock_execute.assert_called_once()
-            called_args = mock_execute.call_args[1]["args"]
-            assert called_args["tool_name"] == "create_task"
+            called_args = mock_execute.call_args.args[1]  # args dict
+            assert called_args["title"] == "TestTask"
+            assert called_args["project_id"] == proj.id
 
 
 def test_chat_tool_execution_result_is_user_facing(db_session):
