@@ -281,11 +281,21 @@ or:
         )
 
         raw = response.choices[0].message.content.strip()
+        # Strip potential markdown code fences that the model may add
+        if raw.startswith("```") and raw.endswith("```"):
+            raw = raw[3:-3].strip()
+        if raw.startswith("```"):
+            raw = raw[3:].strip()
+        if raw.endswith("```"):
+            raw = raw[:-3].strip()
 
         if raw == "NONE":
             return None
 
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
 
         if not isinstance(parsed, dict):
             return None
