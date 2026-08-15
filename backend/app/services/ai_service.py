@@ -10,7 +10,7 @@ from app.services.google_calendar import get_upcoming_events, is_connected
 
 # ----------------------------------------------------------------------
 # System prompt & context helpers (unchanged from previous version)
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------
 SYSTEM_PROMPT = """You are the Engineering Command Center AI – a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
 You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers – not generic ones.
@@ -50,7 +50,7 @@ def _build_context(db: Session) -> str:
         for p in projects:
             task_count = len(p.tasks)
             done = sum(1 for t in p.tasks if t.status == "DONE")
-            lines.append(f"- **{p.name}** [{p.category}] – {done}/{task_count} tasks done")
+            lines.append(f"- **{p.name}** (project_id={p.id}) [{p.category}] – {done}/{task_count} tasks done")
         lines.append("")
 
     # ------------------------------------------------------------------
@@ -150,20 +150,6 @@ def _build_context(db: Session) -> str:
     except Exception:
         pass
 
-    lines.append("--- END CONTEXT ---\n")
-
-    # ---- Calendar events (if connected) ----
-    try:
-        if is_connected():
-            events = get_upcoming_events(days=7, max_results=10)
-            if events:
-                lines.insert(-1, "## Upcoming Calendar Events (7 days)")
-                for e in events:
-                    lines.insert(-1, f"- {e['title']} – {e['start'][:10]}")
-                lines.insert(-1, "")
-    except Exception:
-        pass
-
     return "\n".join(lines)
 
 
@@ -184,7 +170,7 @@ def _maybe_rag(user_message: str) -> Optional[str]:
 
 # ----------------------------------------------------------------------
 # Tool‑call detection & execution
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------
 import re, json
 
 def extract_tool_call(message: str) -> Optional[dict]:
@@ -253,6 +239,8 @@ IMPORTANT RULES:
 - If the user is asking a general question, return NONE.
 - Never invent a project_id.
 - Use LIVE CONTEXT to resolve project names to IDs.
+  - When a project name is mentioned (e.g., "BAJA HV"), locate that project in the LIVE CONTEXT section. The context lists each active project as "... (project_id=X) ..." where X is the numeric database ID. Use that ID as project_id.
+  - If the mentioned project is not found in the LIVE CONTEXT, set project_id to null.
 - For create_task, **title is the only required user-provided field**.
   - If **priority** is omitted, treat it as **"MEDIUM"**.
   - If **deadline** is omitted, treat it as **null**.
@@ -274,7 +262,7 @@ NONE
 
 or:
 
-{{"tool":"create_task","args":{{"title":"wiring diagram","priority":"MEDIUM","deadline":null,"project_id":null}}}}
+{{"tool":"create_task","args":{{"title":"wiring diagram","priority":"MEDIUM","deadline":null,"project_id":1}}}}
 """
 
     try:

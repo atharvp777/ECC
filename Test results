@@ -1,0 +1,5 @@
+============================= test session starts ==============================
+collected 4 items
+
+backend/tests/test_ai_service_project_id.py .....
+============================== 4 passed in 0.13s ==============================
