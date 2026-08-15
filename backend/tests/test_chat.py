@@ -140,8 +140,14 @@ def test_chat_explicit_create_task_path(db_session):
             '{"tool":"create_task","args":{"title":"TestTask","priority":"MEDIUM",'
             f'"deadline":"2025-01-01T00:00:00","project_id":{proj.id}}}'
         )
-        # The original code referenced an undefined `mock_response`; we use `mock_client`
-        mock_client.chat.completions.create.return_value = mock_client
+        # Create a mock completion that returns the planner JSON
+        mock_completion = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message = MagicMock()
+        mock_choice.message.content = planner_json
+        mock_choice.message.role = "assistant"
+        mock_completion.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_completion
         mock_groq.return_value = mock_client
 
         # Create a Task object to be returned by execute_tool
