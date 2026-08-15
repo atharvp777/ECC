@@ -11,9 +11,9 @@ from app.services.google_calendar import get_upcoming_events, is_connected
 # ----------------------------------------------------------------------
 # System prompt & context helpers (unchanged from previous version)
 # ----------------------------------------------------------------------
-SYSTEM_PROMPT = """You are the Engineering Command Center AI â€” a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
+SYSTEM_PROMPT = """You are the Engineering Command Center AI â€“ a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
-You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers â€” not generic ones.
+You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers – not generic ones.
 
 Your personality:
 - Direct and efficient. No filler. No "Great question!".
@@ -25,7 +25,18 @@ Your personality:
 When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
 
 def _build_context(db: Session) -> str:
+    """
+    Build the live context string that is prepended to every AI prompt.
+    Handles timezone‑aware vs naive datetime comparisons robustly.
+    """
     now = datetime.now(timezone.utc)
+
+    # Helper: ensure a datetime is timezone‑aware in UTC
+    def _make_utc_aware(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
     lines = [f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M UTC')}) ---\n"]
 
     from app.models.project import Project
@@ -39,12 +50,18 @@ def _build_context(db: Session) -> str:
         for p in projects:
             task_count = len(p.tasks)
             done = sum(1 for t in p.tasks if t.status == "DONE")
-            lines.append(f"- **{p.name}** [{p.category}] â€” {done}/{task_count} tasks done")
+            lines.append(f"- **{p.name}** [{p.category}] – {done}/{task_count} tasks done")
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Overdue tasks (deadline < now)
+    # ------------------------------------------------------------------
     overdue = (
         db.query(Task)
-        .filter(Task.deadline < now, Task.status != "DONE")
+        .filter(
+            _make_utc_aware(Task.deadline) < now,
+            Task.status != "DONE",
+        )
         .order_by(Task.deadline.asc())
         .limit(10)
         .all()
@@ -52,15 +69,24 @@ def _build_context(db: Session) -> str:
     if overdue:
         lines.append("## Overdue Tasks")
         for t in overdue:
-            days = (now - t.deadline).days
+            # Ensure deadline is UTC‑aware before subtraction
+            deadline_utc = _make_utc_aware(t.deadline)
+            days = (now - deadline_utc).days
             proj = t.project.name if t.project else "No project"
-            lines.append(f"- [{t.priority.upper()}] {t.title} â€” {days}d overdue ({proj})")
+            lines.append(f"- [{t.priority.upper()}] {t.title} – {days}d overdue ({proj})")
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Upcoming tasks (deadline within the next week)
+    # ------------------------------------------------------------------
     week_end = now + timedelta(days=7)
     upcoming = (
         db.query(Task)
-        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != "DONE")
+        .filter(
+            _make_utc_aware(Task.deadline) >= now,
+            _make_utc_aware(Task.deadline) <= week_end,
+            Task.status != "DONE",
+        )
         .order_by(Task.deadline.asc())
         .limit(15)
         .all()
@@ -68,11 +94,15 @@ def _build_context(db: Session) -> str:
     if upcoming:
         lines.append("## Upcoming This Week")
         for t in upcoming:
-            dl = t.deadline.strftime("%b %d")
+            deadline_utc = _make_utc_aware(t.deadline)
+            dl = deadline_utc.strftime("%b %d")
             proj = t.project.name if t.project else "Personal"
-            lines.append(f"- [{t.priority.upper()}] {t.title} â€” due {dl} ({proj})")
+            lines.append(f"- [{t.priority.upper()}] {t.title} – due {dl} ({proj})")
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Critical open tasks
+    # ------------------------------------------------------------------
     critical = (
         db.query(Task)
         .filter(Task.priority == "CRITICAL", Task.status != "DONE")
@@ -82,9 +112,12 @@ def _build_context(db: Session) -> str:
     if critical:
         lines.append("## Critical Open Tasks")
         for t in critical:
-            lines.append(f"- {t.title}" + (f" â€” due {t.deadline.strftime('%b %d')}" if t.deadline else ""))
+            lines.append(f"- {t.title}" + (f" – due {t.deadline.strftime('%b %d')}" if t.deadline else ""))
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Recent notes
+    # ------------------------------------------------------------------
     notes = db.query(Note).order_by(Note.updated_at.desc()).limit(5).all()
     if notes:
         lines.append("## Recent Notes")
@@ -92,13 +125,30 @@ def _build_context(db: Session) -> str:
             lines.append(f"- {n.title}")
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Recent meetings
+    # ------------------------------------------------------------------
     recent_meetings = db.query(Meeting).order_by(Meeting.held_at.desc()).limit(3).all()
     if recent_meetings:
         lines.append("## Recent Meetings")
         for m in recent_meetings:
             pending = sum(1 for a in m.action_items if not a.is_done)
-            lines.append(f"- {m.title} ({m.held_at.strftime('%b %d')}) â€” {pending} open action items")
+            lines.append(f"- {m.title} ({m.held_at.strftime('%b %d')}) – {pending} open action items")
         lines.append("")
+
+    # ------------------------------------------------------------------
+    # Calendar events (if connected)
+    # ------------------------------------------------------------------
+    try:
+        if is_connected():
+            events = get_upcoming_events(days=7, max_results=10)
+            if events:
+                lines.insert(-1, "## Upcoming Calendar Events (7 days)")
+                for e in events:
+                    lines.insert(-1, f"- {e['title']} – {e['start'][:10]}")
+                lines.insert(-1, "")
+    except Exception:
+        pass
 
     lines.append("--- END CONTEXT ---\n")
 
@@ -109,7 +159,7 @@ def _build_context(db: Session) -> str:
             if events:
                 lines.insert(-1, "## Upcoming Calendar Events (7 days)")
                 for e in events:
-                    lines.insert(-1, f"- {e['title']} â€” {e['start'][:10]}")
+                    lines.insert(-1, f"- {e['title']} – {e['start'][:10]}")
                 lines.insert(-1, "")
     except Exception:
         pass
@@ -133,7 +183,7 @@ def _maybe_rag(user_message: str) -> Optional[str]:
 
 
 # ----------------------------------------------------------------------
-# Toolâ€‘call detection & execution
+# Tool‑call detection & execution
 # ----------------------------------------------------------------------
 import re, json
 
@@ -261,7 +311,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
     """
     Main entry point used by the chat router.
 
-    1. Build live project/task/note/meeting context.
+    1. Build live context.
     2. Detect explicit /tool commands.
     3. Execute tools safely.
     4. Otherwise use Groq for normal conversation.
