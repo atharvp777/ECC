@@ -105,7 +105,7 @@ def test_chat_tool_execution_result_is_user_facing(db_session):
         with patch("app.services.ai_service.execute_tool") as mock_execute:
             # Simulate completing task 1
             mock_execute.return_value = {"data": {"status": "DONE"}}
-            messages = [{"role": "user", "content": "complete task 1"})
+            messages = [{"role": "user", "content": "complete task 1"}]
             reply = chat_with_ai(messages, db_session)
             assert "completed" in reply.lower()
             mock_execute.assert_called_once()

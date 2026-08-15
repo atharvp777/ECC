@@ -13,8 +13,8 @@ from app.services.tools import (
     update_task,
     complete_task,
 )
-from app.services.database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 # ----------------------------------------------------------------------
@@ -22,11 +22,7 @@ from sqlalchemy.orm import Session
 # ----------------------------------------------------------------------
 @pytest.fixture
 def db_session():
-    engine = SessionLocal().bind = None  # reset any previous bind
-    test_engine = SessionLocal().bind = None
-    test_engine = SessionLocal().bind = None  # reset
     # Create a new in‑memory engine
-    from sqlalchemy import create_engine
     test_engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(test_engine)
     TestSession = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
