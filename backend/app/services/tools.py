@@ -40,7 +40,11 @@ class CreateTaskRequest(BaseModel):
 
 class UpdateTaskRequest(BaseModel):
     task_id: int
-
+    title: Optional[str] = None
+    priority: Optional[str] = None
+    deadline: Optional[str] = None
+    project_id: Optional[int] = None
+    status: Optional[str] = None
 
 
 class CompleteTaskRequest(BaseModel):
@@ -113,8 +117,15 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     task = db.query(Task).filter(Task.id == req.task_id).first()
     if not task:
         return {"data": None}
-    for key, value in req.kwargs.items():
-        setattr(task, key, value)
+    update_data = req.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        if field == "deadline" and value is not None:
+            # Convert ISO string to datetime; handle Z suffix for UTC
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
+            task.deadline = datetime.fromisoformat(value)
+        else:
+            setattr(task, field, value)
     db.commit()
     db.refresh(task)
     return {"data": task}

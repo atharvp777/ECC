@@ -139,16 +139,16 @@ def test_update_task_and_complete_task(db_session: Session):
     created = create_task(db_session, task_req)
     task_id = created["data"].id
 
-    # Update task status via tool
-    upd_req = type("Req", (), {"task_id": task_id})()
+    # Update task title via real UpdateTaskRequest
+    from app.services.tools import UpdateTaskRequest
+    upd_req = UpdateTaskRequest(task_id=task_id, title="UpdatedTask")
     updated = update_task(db_session, upd_req)
-    # The update function may not change anything here, but it should not error
-    assert updated["data"] is not None
+    assert updated["data"].title == "UpdatedTask"
 
-    # Complete the task
+    # Complete the task – should still work
     complete_req = type("Req", (), {"task_id": task_id})()
     completed = complete_task(db_session, complete_req)
-    assert completed["data"]["status"] == "DONE"  # assuming the response includes status
+    assert completed["data"]["status"] == "DONE"
 
 
 # ----------------------------------------------------------------------
