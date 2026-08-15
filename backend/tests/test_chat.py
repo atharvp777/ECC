@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
+import json
 
 from app.services.ai_service import chat_with_ai, plan_tool_call
 from app.core.config import settings
@@ -135,11 +136,16 @@ def test_chat_explicit_create_task_path(db_session):
 
     with patch("app.services.ai_service.Groq") as mock_groq:
         mock_client = MagicMock()
-        # Mock planner to return a create_task tool call
-        planner_json = (
-            '{"tool":"create_task","args":{"title":"TestTask","priority":"MEDIUM",'
-            f'"deadline":"2025-01-01T00:00:00","project_id":{proj.id}}}'
-        )
+        # Mock planner to return a create_task tool call using json.dumps for robustness
+        planner_json = json.dumps({
+            "tool": "create_task",
+            "args": {
+                "title": "TestTask",
+                "priority": "MEDIUM",
+                "deadline": "2025-01-01T00:00:00",
+                "project_id": proj.id,
+            },
+        })
         # Create a mock completion that returns the planner JSON
         mock_completion = MagicMock()
         mock_choice = MagicMock()
