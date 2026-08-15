@@ -78,7 +78,7 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
 
         request = request_model(**args)
 
-        return func(db=db, req=request)
+        return func(db, request)
 
     except Exception as exc:
         return {"data": {"error": str(exc)}}
