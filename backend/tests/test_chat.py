@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
+from datetime import datetime
 
 from app.services.ai_service import chat_with_ai, plan_tool_call
 from app.core.config import settings
@@ -88,8 +89,13 @@ def test_plan_tool_call_live_groq_smoke():
     context = "LIVE CONTEXT\n---\nNo projects listed yet\n---\nEND CONTEXT"
     with patch("app.services.ai_service.Groq") as mock_groq_class:
         mock_client = MagicMock()
-        # The real Groq call would return a JSON string; we let it through
-        mock_client.chat.completions.create.return_value.choices[0].message.content
+        # Setup a mock response that mimics a real Groq completion
+        mock_choices = [MagicMock()]
+        mock_message = MagicMock()
+        mock_message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
+        mock_choices[0].message = mock_message
+        mock_client.chat.completions.create.return_value = MagicMock()
+        mock_client.chat.completions.create.return_value.choices = mock_choices
         mock_groq_class.return_value = mock_client
 
         result = plan_tool_call(user_msg, context)
@@ -142,7 +148,7 @@ def test_chat_explicit_create_task_path(db_session):
         task = Task(
             title="TestTask",
             priority="MEDIUM",
-            deadline="2025-01-01T00:00:00",
+            deadline=datetime(2025, 1, 1, 0, 0, 0),
             project_id=proj.id,
         )
         db_session.add(task)
