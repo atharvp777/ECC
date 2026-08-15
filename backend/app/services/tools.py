@@ -33,8 +33,8 @@ class ListTasksRequest(BaseModel):
 
 class CreateTaskRequest(BaseModel):
     title: str
-    priority: str
-    deadline: str
+    priority: str = "MEDIUM"
+    deadline: Optional[str] = None
     project_id: Optional[int] = None
 
 
@@ -101,10 +101,17 @@ def list_tasks(db: Session, req: ListTasksRequest) -> Dict[str, Any]:
 
 
 def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
+    deadline = None
+
+    if req.deadline:
+        deadline = datetime.fromisoformat(
+            req.deadline.replace("Z", "+00:00")
+        )
+
     task = Task(
         title=req.title,
         priority=req.priority,
-        deadline=datetime.fromisoformat(req.deadline.replace("Z", "+00:00")),
+        deadline=deadline,
         project_id=req.project_id,
     )
     db.add(task)
