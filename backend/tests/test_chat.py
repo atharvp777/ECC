@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from app.services.ai_service import chat_with_ai
+from app.services.ai_service import chat_with_ai, plan_tool_call
 from app.core.config import settings
 from app.services.tool_dispatcher import execute_tool
 from app.core.database import SessionLocal, Base
@@ -32,6 +32,16 @@ def db_session():
 def _mock_groq_chat_completion(content: str):
     mock_choice = MagicMock()
     mock_choice.message.content = content
+    mock_choice.message.role = "assistant"
+    mock = MagicMock()
+    mock.choices = [mock_choice]
+    return mock
+
+
+def _mock_groq_response(text: str):
+    """Create a mock Groq chat completion response with the given text."""
+    mock_choice = MagicMock()
+    mock_choice.message.content = text
     mock_choice.message.role = "assistant"
     mock = MagicMock()
     mock.choices = [mock_choice]
