@@ -304,8 +304,9 @@ or:
 
         return parsed
 
-    except Exception:
-        return None
+    except Exception as exc:
+        print(f"PLAN_TOOL_CALL ERROR: {type(exc).__name__}: {exc}")
+        raise
 
 def chat_with_ai(messages: List[dict], db: Session) -> str:
     """
