@@ -148,7 +148,7 @@ def test_update_task_and_complete_task(db_session: Session):
     # Complete the task – should still work
     complete_req = type("Req", (), {"task_id": task_id})()
     completed = complete_task(db_session, complete_req)
-    assert completed["data"]["status"] == "DONE"
+    assert completed["data"].status == TaskStatus.DONE
 
 
 # ----------------------------------------------------------------------
