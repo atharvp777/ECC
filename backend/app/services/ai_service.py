@@ -234,7 +234,7 @@ Arguments: {{}}
 
 5. create_task
 Arguments:
-{{"title": "string", "priority": "LOW | MEDIUM | HIGH | CRITICAL", "deadline": "YYYY-MM-DDTHH:MM:SS", "project_id": integer or null}}
+{{"title": "string", "priority": "LOW | MEDIUM | HIGH | CRITICAL" (default "MEDIUM"), "deadline": "YYYY-MM-DDTHH:MM:SS" (default null), "project_id": integer (default null)}}
 
 6. update_task
 Arguments:
@@ -253,8 +253,11 @@ IMPORTANT RULES:
 - If the user is asking a general question, return NONE.
 - Never invent a project_id.
 - Use LIVE CONTEXT to resolve project names to IDs.
-- For create_task, priority must be LOW, MEDIUM, HIGH, or CRITICAL.
-- If a required create_task field is missing, return NONE.
+- For create_task, **title is the only required user-provided field**.
+  - If **priority** is omitted, treat it as **"MEDIUM"**.
+  - If **deadline** is omitted, treat it as **null**.
+  - If **project_id** cannot be resolved, treat it as **null**.
+  - **Never invent** a project_id or a deadline.
 - Return ONLY valid JSON.
 - Do not use markdown.
 - Do not explain your decision.
@@ -271,7 +274,7 @@ NONE
 
 or:
 
-{{"tool":"create_task","args":{{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}}}
+{{"tool":"create_task","args":{{"title":"wiring diagram","priority":"MEDIUM","deadline":null,"project_id":null}}}}
 """
 
     try:

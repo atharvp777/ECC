@@ -82,3 +82,61 @@ def test_plan_tool_call_live_groq_smoke():
         assert result is not None
         assert "tool" in result
         assert result["tool"] == "create_task"
+
+
+def test_plan_tool_call_natural_language_create_task():
+    """A plain “Create a task called X” should generate a create_task call
+    with defaults: priority=MEDIUM, deadline=null, project_id=null."""
+    user_msg = "Create a task called TEST_TASK"
+    context = "LIVE CONTEXT\n---\nNo projects listed yet\n---\nEND CONTEXT"
+    with patch("app.services.ai_service.Groq") as mock_groq_class:
+        mock_client = MagicMock()
+        mock_response = _mock_groq_response(
+            '{"tool":"create_task","args":{"title":"TEST_TASK","priority":"MEDIUM","deadline":null,"project_id":null}}'
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_groq_class.return_value = mock_client
+
+        result = plan_tool_call(user_msg, context)
+        assert result is not None
+        assert result["tool"] == "create_task"
+        args = result["args"]
+        assert args["title"] == "TEST_TASK"
+        assert args["priority"] == "MEDIUM"
+        assert args["deadline"] is None
+        assert args["project_id"] is None
+
+
+def test_create_task_handles_deadline_none():
+    """Direct test that the create_task wrapper can handle a None deadline."""
+    from app.services.tools import create_task, CreateTaskRequest
+    mock_db = MagicMock()
+    req = CreateTaskRequest(
+        title="No deadline task",
+        priority="MEDIUM",
+        deadline=None,
+        project_id=None,
+    )
+    # Should not raise and should return a dict with a data key
+    result = create_task(mock_db, req)
+    assert result is not None
+    assert "data" in result
+    # The stored deadline should be None
+    assert result["data"]["deadline"] is None
+
+
+def test_create_task_with_valid_deadline():
+    """A create_task with a proper ISO deadline should be processed correctly."""
+    from app.services.tools import create_task, CreateTaskRequest
+    mock_db = MagicMock()
+    req = CreateTaskRequest(
+        title="Task with deadline",
+        priority="MEDIUM",
+        deadline="2026-08-15T18:00:00Z",
+        project_id=None,
+    )
+    result = create_task(mock_db, req)
+    assert result is not None
+    assert "data" in result
+    # The function should not error out; we cannot assert the exact datetime
+    # without a real DB, but the presence of "data" confirms success.
