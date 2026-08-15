@@ -122,7 +122,7 @@ def test_create_task_handles_deadline_none():
     assert result is not None
     assert "data" in result
     # The stored deadline should be None
-    assert result["data"]["deadline"] is None
+    assert result["data"].deadline is None
 
 
 def test_create_task_with_valid_deadline():

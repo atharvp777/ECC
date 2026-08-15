@@ -69,8 +69,7 @@ def test_plan_tool_call_resolves_project_id(db_session):
         mock_instance.chat.completions.create.return_value = fake_response
         mock_groq.return_value = mock_instance
 
-        user_msg = "Create a task called Check battery wiring in BAJA HV"
-        result = plan_tool_call(user_msg, ctx)
+        result = plan_tool_call("Create a task called Check battery wiring in BAJA HV", ctx)
 
         # The function now returns the parsed dict directly
         assert result["tool"] == "create_task"
@@ -103,8 +102,7 @@ def test_plan_tool_call_no_project_uses_null(db_session):
         mock_instance.chat.completions.create.return_value = fake_response
         mock_groq.return_value = mock_instance
 
-        user_msg = "Create a task called Write report"
-        result = plan_tool_call(user_msg, ctx)
+        result = plan_tool_call("Create a task called Write report", ctx)
 
         assert result["args"]["project_id"] is None
 
@@ -151,7 +149,7 @@ def test_create_task_handles_deadline_none(db_session):
     db = SessionLocal()
     proj = db.query(Project).filter(Project.status == "ACTIVE").first()
     if not proj:
-        proj = Project(name="TestProj", category="TEST", status="ACTIVE")
+        proj = Project(name="TestProj", category="PERSONAL", status="ACTIVE")
         db.add(proj)
         db.commit()
     # Prepare args for create_task with deadline=None
