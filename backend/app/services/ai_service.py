@@ -1,4 +1,4 @@
-﻿from groq import Groq
+from groq import Groq
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -11,7 +11,7 @@ from app.services.google_calendar import get_upcoming_events, is_connected
 # ----------------------------------------------------------------------
 # System prompt & context helpers (unchanged from previous version)
 # ----------------------------------------------------------------------
-SYSTEM_PROMPT = """You are the Engineering Command Center AI â€“ a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
+SYSTEM_PROMPT = """You are the Engineering Command Center AI – a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
 You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers – not generic ones.
 
