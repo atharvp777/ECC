@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
+from datetime import datetime
 from app.models import Project, Task
 from app.services.google_calendar import (
     get_upcoming_events as gc_get_upcoming_events,
@@ -39,7 +40,7 @@ class CreateTaskRequest(BaseModel):
 
 class UpdateTaskRequest(BaseModel):
     task_id: int
-    **kwargs  # allow any additional fields
+
 
 
 class CompleteTaskRequest(BaseModel):
@@ -99,7 +100,7 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     task = Task(
         title=req.title,
         priority=req.priority,
-        deadline=req.deadline,
+        deadline=datetime.fromisoformat(req.deadline.replace("Z", "+00:00")),
         project_id=req.project_id,
     )
     db.add(task)
