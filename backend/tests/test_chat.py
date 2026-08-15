@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock
 
 from app.services.ai_service import chat_with_ai
 from app.core.config import settings
-from app.services.tools import execute_tool
+from app.services.tool_dispatcher import execute_tool
 from app.core.database import SessionLocal, Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
