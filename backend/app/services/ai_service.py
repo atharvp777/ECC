@@ -59,7 +59,7 @@ def _build_context(db: Session) -> str:
     overdue = (
         db.query(Task)
         .filter(
-            _make_utc_aware(Task.deadline) < now,
+            Task.deadline < now,
             Task.status != "DONE",
         )
         .order_by(Task.deadline.asc())
@@ -83,8 +83,8 @@ def _build_context(db: Session) -> str:
     upcoming = (
         db.query(Task)
         .filter(
-            _make_utc_aware(Task.deadline) >= now,
-            _make_utc_aware(Task.deadline) <= week_end,
+            Task.deadline >= now,
+            Task.deadline <= week_end,
             Task.status != "DONE",
         )
         .order_by(Task.deadline.asc())
