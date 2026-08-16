@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getTasks, createTask, updateTask, deleteTask, getProjects, getGithubRepos, pushTaskToGithub } from "../api/client";
+import { getTasks, createTask, updateTask, deleteTask, getProjects, getGithubRepos, pushTaskToGithub } from "../api";
 import { Plus, Trash2, Check, CheckSquare, GitBranch } from "lucide-react";
 import Modal from "../components/Modal";
 
@@ -236,3 +236,4 @@ export default function Tasks() {
     </div>
   );
 }
+

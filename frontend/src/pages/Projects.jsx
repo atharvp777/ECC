@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getProjects, createProject, deleteProject } from "../api/client";
+import { getProjects, createProject, deleteProject } from "../api";
 import { Plus, Trash2, FolderOpen } from "lucide-react";
 import Modal from "../components/Modal";
 
@@ -134,3 +134,4 @@ export default function Projects() {
     </div>
   );
 }
+

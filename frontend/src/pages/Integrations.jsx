@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import {
   getIntegrationStatus, getGoogleEvents, disconnectGoogle,
   getGithubRepos, getGithubIssues, getGithubPRs, getGithubCommits,
-} from "../api/client";
+} from "../api";
 import { Calendar, GitBranch, Check, X, ExternalLink, GitPullRequest, AlertCircle, GitCommit, RefreshCw } from "lucide-react";
 
 const BASE = "http://localhost:8000";
@@ -236,3 +236,4 @@ export default function Integrations() {
     </div>
   );
 }
+

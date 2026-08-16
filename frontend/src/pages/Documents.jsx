@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { getDocuments, uploadDocument, deleteDocument, getProjects, searchDocs, askDocs, ingestDoc, indexStatus } from "../api/client";
+import { getDocuments, uploadDocument, deleteDocument, getProjects, searchDocs, askDocs, ingestDoc, indexStatus } from "../api";
 import { Upload, Trash2, FileText, FileImage, File, Search, MessageSquare, RefreshCw, X } from "lucide-react";
 
 const ICONS = {
@@ -263,3 +263,4 @@ export default function Documents() {
     </div>
   );
 }
+

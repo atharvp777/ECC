@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getNotes, createNote, updateNote, deleteNote, getProjects } from "../api/client";
+import { getNotes, createNote, updateNote, deleteNote, getProjects } from "../api";
 import { Plus, Trash2, FileText } from "lucide-react";
 
 export default function Notes() {
@@ -121,3 +121,4 @@ export default function Notes() {
     </div>
   );
 }
+

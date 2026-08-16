@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getDashboardStats, getTodayTasks, getUpcomingTasks, updateTask } from "../api/client";
+import { getDashboardStats, getTodayTasks, getUpcomingTasks, updateTask } from "../api";
 import { Check, AlertTriangle, Clock, Folder, CheckSquare, Zap } from "lucide-react";
 
 function StatCard({ label, value, color, icon: Icon }) {
@@ -47,17 +47,22 @@ export default function Dashboard() {
   const navigate = useNavigate();
 
   const load = async () => {
-    try {
-      const [s, t, u] = await Promise.all([
-        getDashboardStats(), getTodayTasks(), getUpcomingTasks(7),
-      ]);
-      setStats(s); setToday(t); setUpcoming(u);
-    } catch {
-      // backend not running — show empty state
-    } finally {
-      setLoading(false);
-    }
-  };
+  try {
+    const [s, t, u] = await Promise.all([
+      getDashboardStats(),
+      getTodayTasks(),
+      getUpcomingTasks(7),
+    ]);
+
+    setStats(s);
+    setToday(Array.isArray(t) ? t : []);
+    setUpcoming(Array.isArray(u) ? u : []);
+  } catch (error) {
+    console.error("Dashboard API error:", error);
+  } finally {
+    setLoading(false);
+  }
+};
 
   useEffect(() => {
     load();
@@ -121,14 +126,21 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* No backend notice */}
-      {!stats && (
-        <div className="card" style={{ marginTop: 16, borderColor: "var(--warning)", textAlign: "center" }}>
-          <p style={{ color: "var(--warning)", fontSize: 13 }}>
-            ⚠ Backend not detected. Run <code style={{ fontFamily: "monospace", background: "var(--surface2)", padding: "1px 6px", borderRadius: 4 }}>start.bat</code> in the backend folder to connect.
-          </p>
-        </div>
-      )}
+      {!stats && !loading && (
+  <div
+    className="card"
+    style={{
+      marginTop: 16,
+      borderColor: "var(--warning)",
+      textAlign: "center",
+    }}
+  >
+    <p style={{ color: "var(--warning)", fontSize: 13 }}>
+      ⚠ Unable to load dashboard data. Check the backend connection.
+    </p>
+  </div>
+)}
     </div>
   );
 }
+

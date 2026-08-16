@@ -6,10 +6,32 @@ const api = axios.create({
   timeout: 10000,
 });
 
-export const getBackendHealth = () => api.get("/").then((response) => response.data);
-export const getDashboardStats = () => api.get("/dashboard/stats").then(r => r.data);
-export const getTodayTasks = () => api.get("/tasks/today").then(r => r.data);
-export const getUpcomingTasks = (days = 7) => api.get(`/tasks/upcoming?days=${days}`).then(r => r.data);
-export const updateTask = (id, data) => api.patch(`/tasks/${id}`, data).then(r => r.data);
+// Backend
+export const getBackendHealth = () =>
+  api.get("/").then((response) => response.data);
+
+// Dashboard
+export const getDashboardStats = () =>
+  api.get("/dashboard/stats").then((response) => response.data);
+
+// Tasks
+export const getTodayTasks = () =>
+  api.get("/tasks/today").then((response) => response.data);
+
+export const getUpcomingTasks = (days = 7) =>
+  api.get(`/tasks/upcoming?days=${days}`).then((response) => response.data);
+
+export const updateTask = (id, data) =>
+  api.patch(`/tasks/${id}`, data).then((response) => response.data);
+
+// Projects
+export const getProjects = () =>
+  api.get("/projects/").then((response) => response.data);
+
+export const createProject = (data) =>
+  api.post("/projects/", data).then((response) => response.data);
+
+export const deleteProject = (id) =>
+  api.delete(`/projects/${id}`).then((response) => response.data);
 
 export default api;

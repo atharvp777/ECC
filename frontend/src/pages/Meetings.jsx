@@ -3,7 +3,7 @@ import {
   getMeetings, createMeeting, deleteMeeting, updateMeeting,
   updateActionItem, getProjects,
   summarizeMeeting, transcribeMeeting, fullPipeline,
-} from "../api/client";
+} from "../api";
 import { Plus, Trash2, Check, Users, Sparkles, Mic, Upload, FileText, RefreshCw } from "lucide-react";
 import Modal from "../components/Modal";
 
@@ -388,3 +388,4 @@ export default function Meetings() {
     </div>
   );
 }
+
