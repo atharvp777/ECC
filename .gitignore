@@ -19,3 +19,11 @@ frontend/src-tauri/target/
 frontend/*.log
 frontend/*.pid
 frontend/_archive_ecc-frontend-v1/
+.aider*
+
+# Local development/runtime data at project root
+/ecc.db
+/ecc.db-*
+/uploads/
+/knowledge/
+/venv/

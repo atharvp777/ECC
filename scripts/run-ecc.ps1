@@ -1,114 +1,198 @@
 param([switch]$Stop)
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
+
 $root = Split-Path -Parent $PSScriptRoot
-$backend = Join-Path $root 'backend'
-$frontend = Join-Path $root 'frontend'
-$pidFile = Join-Path $backend 'ecc-backend.pid'
-$frontendPidFile = Join-Path $frontend 'ecc-frontend.pid'
-$backendLog = Join-Path $backend 'ecc-backend.log'
-$backendErrorLog = Join-Path $backend 'ecc-backend-error.log'
-$frontendLog = Join-Path $frontend 'ecc-frontend.log'
-$frontendErrorLog = Join-Path $frontend 'ecc-frontend-error.log'
+$backend = Join-Path $root "backend"
+$frontend = Join-Path $root "frontend"
 
-function Stop-EccBackend {
-    if (-not (Test-Path $pidFile)) { return }
-    $processId = [int](Get-Content $pidFile -Raw)
-    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if ($process) { Stop-Process -Id $processId -Force }
-    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+$pidFile = Join-Path $backend "ecc-backend.pid"
+$frontendPidFile = Join-Path $frontend "ecc-frontend.pid"
+
+$backendLog = Join-Path $backend "ecc-backend.log"
+$backendErrorLog = Join-Path $backend "ecc-backend-error.log"
+$frontendLog = Join-Path $frontend "ecc-frontend.log"
+$frontendErrorLog = Join-Path $frontend "ecc-frontend-error.log"
+
+$python = Join-Path $root "venv\Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    Write-Host "Project Python environment not found: $python" -ForegroundColor Red
+    exit 1
 }
+$desktopApp = Join-Path $frontend "src-tauri\target\release\ecc-frontend.exe"
 
-function Stop-EccFrontend {
-    if (-not (Test-Path $frontendPidFile)) { return }
-    $processId = [int](Get-Content $frontendPidFile -Raw)
-    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if ($process) { Stop-Process -Id $processId -Force }
-    Remove-Item $frontendPidFile -Force -ErrorAction SilentlyContinue
-}
-
-function Test-EccBackend {
+function Test-Backend {
     try {
-        $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/' -UseBasicParsing -TimeoutSec 2
+        $response = Invoke-WebRequest `
+            -Uri "http://127.0.0.1:8000/" `
+            -UseBasicParsing `
+            -TimeoutSec 2
+
         return $response.StatusCode -eq 200
-    } catch {
+    }
+    catch {
         return $false
     }
 }
 
-function Test-EccFrontend {
+function Test-Frontend {
     try {
-        $response = Invoke-WebRequest -Uri 'http://localhost:1420/' -UseBasicParsing -TimeoutSec 2
+        $response = Invoke-WebRequest `
+            -Uri "http://localhost:1420/" `
+            -UseBasicParsing `
+            -TimeoutSec 2
+
         return $response.StatusCode -eq 200
-    } catch {
+    }
+    catch {
         return $false
     }
+}
+
+function Stop-ProcessFromPidFile($file) {
+    if (-not (Test-Path $file)) {
+        return
+    }
+
+    try {
+        $processId = [int](Get-Content $file -Raw)
+        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
+
+        if ($process) {
+            # Kill the whole process tree (e.g. cmd.exe -> npm -> vite/node)
+            # so child processes are not left orphaned.
+            $null = & taskkill.exe /PID $processId /T /F 2>$null
+
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    catch {
+    }
+
+    Remove-Item $file -Force -ErrorAction SilentlyContinue
 }
 
 if ($Stop) {
-    Stop-EccFrontend
-    Stop-EccBackend
-    Write-Host 'Engineering Command Center stopped.' -ForegroundColor Yellow
+    Stop-ProcessFromPidFile $frontendPidFile
+    Stop-ProcessFromPidFile $pidFile
+
+    Write-Host ""
+    Write-Host "Engineering Command Center stopped." -ForegroundColor Yellow
     exit 0
 }
 
-Write-Host '==================================================' -ForegroundColor Cyan
-Write-Host ' Starting Engineering Command Center...' -ForegroundColor Green
-Write-Host '==================================================' -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host " Starting Engineering Command Center..." -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Cyan
 
-# 1. Start Backend if not already running
-if (-not (Test-EccBackend)) {
-    Stop-EccBackend
-    $python = Join-Path $backend 'venv\Scripts\python.exe'
-    if (-not (Test-Path $python)) { $python = 'python' }
+# --------------------------------------------------
+# 1. Backend
+# --------------------------------------------------
 
-    $backendProc = Start-Process -FilePath $python `
-        -ArgumentList '-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000' `
-        -WorkingDirectory $backend -PassThru -WindowStyle Hidden -RedirectStandardOutput $backendLog -RedirectStandardError $backendErrorLog
+if (-not (Test-Backend)) {
+
+    if (-not (Test-Path $python)) {
+        Write-Host "Python virtual environment not found:" -ForegroundColor Red
+        Write-Host $python
+        exit 1
+    }
+
+    Write-Host "[1/3] Starting backend..." -ForegroundColor Cyan
+
+    $backendProc = Start-Process `
+        -FilePath $python `
+        -ArgumentList "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000" `
+        -WorkingDirectory $backend `
+        -PassThru `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $backendLog `
+        -RedirectStandardError $backendErrorLog
+
     Set-Content -Path $pidFile -Value $backendProc.Id -NoNewline
 
     $ready = $false
-    foreach ($attempt in 1..15) {
+
+    foreach ($attempt in 1..20) {
         Start-Sleep -Milliseconds 500
-        if (Test-EccBackend) { $ready = $true; break }
+
+        if (Test-Backend) {
+            $ready = $true
+            break
+        }
     }
+
     if (-not $ready) {
-        Stop-EccBackend
-        Write-Host "Backend failed to start. Check $backendLog" -ForegroundColor Red
+        Write-Host "Backend failed to start." -ForegroundColor Red
+        Write-Host "Check:" -ForegroundColor Yellow
+        Write-Host $backendErrorLog
         exit 1
     }
 }
 
-Write-Host ' [✓] Backend API running at http://127.0.0.1:8000/' -ForegroundColor Green
+Write-Host "[OK] Backend running on port 8000" -ForegroundColor Green
 
-# 2. Start Frontend server if not running
-if (-not (Test-EccFrontend)) {
-    $frontendProc = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm.cmd', 'run', 'dev' `
-        -WorkingDirectory $frontend -PassThru -WindowStyle Hidden -RedirectStandardOutput $frontendLog -RedirectStandardError $frontendErrorLog
+# --------------------------------------------------
+# 2. Frontend
+# --------------------------------------------------
+
+if (-not (Test-Frontend)) {
+
+    Write-Host "[2/3] Starting frontend..." -ForegroundColor Cyan
+
+    $frontendProc = Start-Process `
+        -FilePath "cmd.exe" `
+        -ArgumentList "/c", "npm.cmd", "run", "dev" `
+        -WorkingDirectory $frontend `
+        -PassThru `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $frontendLog `
+        -RedirectStandardError $frontendErrorLog
+
     Set-Content -Path $frontendPidFile -Value $frontendProc.Id -NoNewline
 
-    foreach ($attempt in 1..15) {
+    $ready = $false
+
+    foreach ($attempt in 1..20) {
         Start-Sleep -Milliseconds 500
-        if (Test-EccFrontend) { break }
+
+        if (Test-Frontend) {
+            $ready = $true
+            break
+        }
+    }
+
+    if (-not $ready) {
+        Write-Host "Frontend failed to start." -ForegroundColor Red
+        Write-Host "Check:" -ForegroundColor Yellow
+        Write-Host $frontendErrorLog
+        exit 1
     }
 }
 
-Write-Host ' [✓] Frontend running at http://localhost:1420/' -ForegroundColor Green
+Write-Host "[OK] Frontend running on port 1420" -ForegroundColor Green
 
-# 3. Open Browser
-Start-Process 'http://localhost:1420/'
+# --------------------------------------------------
+# 3. Desktop application
+# --------------------------------------------------
 
-# 4. Also launch desktop app executable if available
-$releaseApp = Join-Path $frontend 'src-tauri\target\release\ecc-frontend.exe'
-if (Test-Path $releaseApp) {
-    Start-Process -FilePath $releaseApp
+Write-Host "[3/3] Launching desktop application..." -ForegroundColor Cyan
+
+if (-not (Test-Path $desktopApp)) {
+    Write-Host "Desktop application not found:" -ForegroundColor Red
+    Write-Host $desktopApp
+    exit 1
 }
 
-Write-Host ''
-Write-Host '==================================================' -ForegroundColor Cyan
-Write-Host ' Engineering Command Center is READY!' -ForegroundColor Green
-Write-Host ' Web App: http://localhost:1420/' -ForegroundColor White
-Write-Host ' API Docs: http://127.0.0.1:8000/docs' -ForegroundColor White
-Write-Host ' (Run stop.bat when done to stop services)' -ForegroundColor Yellow
-Write-Host '==================================================' -ForegroundColor Cyan
-Start-Sleep -Seconds 3
+Start-Process -FilePath $desktopApp
+
+Write-Host ""
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host " Engineering Command Center is READY!" -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Desktop app launched." -ForegroundColor White
+Write-Host "Backend:  http://127.0.0.1:8000" -ForegroundColor White
+Write-Host "Frontend: http://localhost:1420" -ForegroundColor White
+Write-Host ""
