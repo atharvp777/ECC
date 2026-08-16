@@ -9,6 +9,7 @@ import json
 import math
 import re
 import hashlib
+import logging
 from pathlib import Path
 from collections import Counter
 from typing import Optional
@@ -19,6 +20,8 @@ from app.models.project import Project
 from app.models.task import Task, TaskStatus
 from app.models.note import Note
 from app.models.document import Document
+
+logger = logging.getLogger(__name__)
 
 INDEX_DIR   = settings.KNOWLEDGE_DIR / "faiss_index"
 CHUNKS_FILE = INDEX_DIR / "chunks.json"
@@ -127,8 +130,39 @@ def _cosine(a: dict, b: dict) -> float:
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 def _load_index() -> tuple[list[dict], dict]:
-    chunks = json.loads(CHUNKS_FILE.read_text()) if CHUNKS_FILE.exists() else []
-    idf    = json.loads(TFIDF_FILE.read_text())  if TFIDF_FILE.exists()  else {}
+    """Load the persisted knowledge index.
+
+    Missing, empty or corrupt index files are treated as an empty index so the
+    rest of the pipeline never crashes on bad on-disk state.
+    """
+    def _read_json(path: Path, expected_type) -> object | None:
+        if not path.exists():
+            return None
+        try:
+            raw_bytes = path.read_bytes()
+        except OSError:
+            return None
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            # Files written by older versions used the platform default
+            # encoding (cp1252 on Windows). Decoding as latin-1 never fails
+            # and round-trips those bytes faithfully.
+            raw = raw_bytes.decode("latin-1")
+        if not raw.strip():
+            return None
+        try:
+            value = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("Knowledge index file %s is corrupt; treating it as empty.", path)
+            return None
+        if not isinstance(value, expected_type):
+            logger.warning("Knowledge index file %s has an unexpected format; treating it as empty.", path)
+            return None
+        return value
+
+    chunks = _read_json(CHUNKS_FILE, list) or []
+    idf    = _read_json(TFIDF_FILE, dict)  or {}
     return chunks, idf
 
 
