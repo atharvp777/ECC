@@ -12,6 +12,7 @@ import secrets
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 
@@ -197,18 +198,28 @@ def _load_credentials():
 
 
 def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
-    """Step 3 — fetch upcoming events from primary calendar."""
+    """Fetch calendar events from the start of today (Asia/Kolkata).
+
+    The listing window begins at 00:00 of the current LOCAL day (UTC+05:30) so
+    an event created earlier today — e.g. "put X on my calendar" scheduled for
+    today at 09:00 — does not disappear from the ECC calendar list merely
+    because its start time has passed. The future window extends ``days`` days
+    from now. Events that ended before today are dropped defensively.
+    """
     creds = _load_credentials()
     if not creds:
         return []
 
-    service  = build("calendar", "v3", credentials=creds)
-    now      = datetime.now(timezone.utc)
+    tz = ZoneInfo("Asia/Kolkata")
+    now = datetime.now(tz)
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     time_max = now + timedelta(days=days)
+
+    service = build("calendar", "v3", credentials=creds)
 
     result = service.events().list(
         calendarId="primary",
-        timeMin=now.isoformat(),
+        timeMin=start_of_today.isoformat(),
         timeMax=time_max.isoformat(),
         maxResults=max_results,
         singleEvents=True,
@@ -218,7 +229,14 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
     events = []
     for e in result.get("items", []):
         start = e["start"].get("dateTime", e["start"].get("date", ""))
-        end   = e["end"].get("dateTime",   e["end"].get("date",   ""))
+        end = e["end"].get("dateTime", e["end"].get("date", ""))
+        # Defensive: never surface an event that ended before today began.
+        if end and "T" in end:
+            try:
+                if datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(tz) <= start_of_today:
+                    continue
+            except (ValueError, TypeError):
+                pass
         events.append({
             "id":          e.get("id"),
             "title":       e.get("summary", "(no title)"),
@@ -227,7 +245,7 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
             "location":    e.get("location"),
             "description": e.get("description"),
             "html_link":   e.get("htmlLink"),
-            "all_day":     "T" not in e["start"].get("dateTime", "T"),
+            "all_day":     "T" not in e["start"].get("dateTime", ""),
         })
     return events
 

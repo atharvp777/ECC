@@ -228,6 +228,23 @@ def parse_event_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _has_explicit_schedule(args: Dict[str, Any]) -> bool:
+    """True when a scheduling request carries an explicit date and/or time.
+
+    A request with NO date and NO time (e.g. "put task X on my calendar") must
+    never be silently defaulted to today at 09:00 — that can create a work slot
+    in the past that disappears from the upcoming-calendar view. Callers return
+    a clarification instead of inventing a time.
+    """
+    if isinstance(args.get("event_data"), dict):
+        return True
+    if isinstance(args.get("start"), dict) and isinstance(args.get("end"), dict):
+        return True
+    when = (args.get("when") or "").strip()
+    start_time = (args.get("start_time") or "").strip()
+    return bool(when or start_time)
+
+
 def build_event_body_from_datetimes(
     start_dt: datetime,
     end_dt: datetime,
@@ -354,7 +371,10 @@ def sync_task_to_calendar(
         event_data = build_event_body_from_datetimes(
             task.scheduled_start, end_dt, task.title, task.description, timezone,
         )
-    elif schedule_on_calendar:
+    elif schedule_on_calendar and _has_explicit_schedule({
+        "when": when,
+        "start_time": start_time,
+    }):
         event_data = build_calendar_event_body({
             "summary": task.title,
             "description": task.description,
@@ -364,12 +384,166 @@ def sync_task_to_calendar(
             "timezone": timezone,
         })
     else:
+        # A schedule was requested but no date/time was given — never invent a
+        # work slot. Without an explicit schedule no calendar event is created.
+        if schedule_on_calendar and not task.google_calendar_event_id:
+            return
         # Linked task updated without a schedule change: summary-only body is
         # enough for Google's events().update().
         event_data = {"summary": task.title}
         if task.description:
             event_data["description"] = task.description
     tcs_create_or_update_event(db, task, event_data)
+
+
+# ---------- Task reference resolution (deterministic, server-side) ----------
+# When the user says "put the work on the BAJA wiring task on my calendar", the
+# planner must NOT guess a task_id and must NOT paraphrase the task reference.
+# The server resolves the user's ORIGINAL message verbatim with strict,
+# deterministic matching, so an unrelated task (e.g. "Wiring Diagram") is never
+# selected merely because it shares a generic token like "wiring", and a
+# specific reference ("work on the BAJA wiring") never degrades into the
+# ambiguous "the BAJA wiring task".
+_TASK_REFERENCE_STOPWORDS = frozenset({
+    # Reference context words.
+    "the", "a", "an", "task", "todo", "my", "your", "calendar",
+    "put", "add", "remove", "link", "unlink", "on", "to", "from", "off",
+    "into", "please", "i", "want", "would", "could", "can", "me",
+    "this", "that", "it", "these", "those",
+    # Scheduling context words — so "…on my calendar tomorrow at 4 PM" does not
+    # become part of the task reference when the full message is resolved.
+    "at", "tomorrow", "today", "pm", "am", "next", "week", "for",
+    "hour", "hours", "minute", "minutes",
+})
+
+_TIE_MARGIN = 0.1
+_MIN_MATCH_SCORE = 0.5
+
+
+def _normalize_task_text(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def _significant_task_tokens(text: str) -> list:
+    normalized = _normalize_task_text(text)
+    return [
+        token for token in normalized.split()
+        if token not in _TASK_REFERENCE_STOPWORDS and not token.isdigit()
+    ]
+
+
+def _task_token_match_score(phrase_tokens: list, title_tokens: list) -> float:
+    """Score a reference phrase against a task title.
+
+    Coverage (how much of the phrase is present) dominates; precision keeps a
+    long, generic title from winning just because it contains the words.
+    """
+    if not phrase_tokens:
+        return 0.0
+    phrase_set = set(phrase_tokens)
+    title_set = set(title_tokens)
+    common = phrase_set & title_set
+    if not common:
+        return 0.0
+    coverage = len(common) / len(phrase_set)
+    precision = len(common) / len(title_set) if title_set else 0.0
+    return 0.7 * coverage + 0.3 * precision
+
+
+def _calendar_state_label(task) -> str:
+    """Informational calendar status shown in clarification messages.
+
+    Never used to break a title ambiguity — it only helps the user choose.
+    """
+    return "📅 On calendar" if task.google_calendar_event_id else "Not on calendar"
+
+
+def resolve_task_for_calendar(
+    db: Session,
+    task_title: str,
+    *,
+    task_id: Optional[int] = None,
+    op: str = "add",
+) -> Dict[str, Any]:
+    """Deterministically resolve the existing task the user referred to.
+
+    Resolution priority:
+      A. Exact normalized title match.
+      B. Strong normalized title match (title equals the reference after
+         reference stopwords are removed, e.g. "work on the BAJA wiring task").
+      C. Strong token/phrase match (significant-token coverage + precision).
+    Weak substring matching is NEVER used.
+
+    Returns:
+      {"status": "found", "task": Task, "score": float}        – unambiguous
+      {"status": "ambiguous", "message": str, "candidates": [Task]} – tie/near-tie;
+          the caller must NOT create/delete any calendar event until resolved
+      {"status": "not_found", "message": str}                  – no meaningful match
+    """
+    phrase_tokens = _significant_task_tokens(task_title)
+    normalized_phrase = _normalize_task_text(task_title)
+    phrase_signature = " ".join(phrase_tokens)
+
+    if not phrase_tokens:
+        return {
+            "status": "not_found",
+            "message": f'I couldn\'t figure out which task you meant by "{task_title}".',
+        }
+
+    tasks = db.query(Task).order_by(Task.id.asc()).all()
+    if not tasks:
+        return {"status": "not_found", "message": "There are no tasks to link yet."}
+
+    scored = []
+    for task in tasks:
+        normalized_title = _normalize_task_text(task.title)
+        title_tokens = _significant_task_tokens(task.title)
+        if normalized_title == normalized_phrase:
+            score = 1.0
+        elif " ".join(title_tokens) == phrase_signature:
+            score = 0.98
+        else:
+            score = _task_token_match_score(phrase_tokens, title_tokens)
+        scored.append((score, task))
+
+    scored.sort(key=lambda item: (-item[0], item[1].id))
+    top_score = scored[0][0]
+
+    if top_score < _MIN_MATCH_SCORE:
+        return {
+            "status": "not_found",
+            "message": f'I couldn\'t find a task matching "{task_title}".',
+        }
+
+    tied = [entry for entry in scored if entry[0] >= top_score - _TIE_MARGIN]
+
+    if len(tied) == 1:
+        return {"status": "found", "task": tied[0][1], "score": top_score}
+
+    # An explicit task_id naming one of the tied candidates is a legitimate,
+    # deterministic tie-breaker (e.g. the planner saw the ID in context).
+    if task_id is not None:
+        for score, task in tied:
+            if task.id == task_id:
+                return {"status": "found", "task": task, "score": score}
+
+    candidates = [task for _, task in tied]
+    listing = "\n".join(
+        f"{index}. {task.title} — {_calendar_state_label(task)}"
+        for index, task in enumerate(candidates, 1)
+    )
+    question = (
+        "Which one should I add to the calendar?"
+        if op == "add"
+        else "Which one should I remove from the calendar?"
+    )
+    return {
+        "status": "ambiguous",
+        "message": f'I found multiple tasks matching "{task_title}":\n{listing}\n{question}',
+        "candidates": candidates,
+    }
 
 
 # ---------- Wrapper implementations ----------
@@ -451,18 +625,21 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     # Task is committed first. Calendar sync is best-effort: on failure the
     # task stays and calendar_sync_error is populated. Never roll back.
     if getattr(req, "schedule_on_calendar", False):
-        body = build_calendar_event_body({
-            "summary": task.title,
-            "description": task.description,
-            "when": req.when,
-            "start_time": req.start_time,
-            "duration_minutes": req.duration_minutes,
-            "timezone": "Asia/Kolkata",
-        })
-        task.scheduled_start = parse_event_datetime(body["start"]["dateTime"])
-        task.scheduled_end = parse_event_datetime(body["end"]["dateTime"])
-        db.commit()
-        sync_task_to_calendar(db, task, schedule_on_calendar=True)
+        if _has_explicit_schedule({"when": req.when, "start_time": req.start_time}):
+            body = build_calendar_event_body({
+                "summary": task.title,
+                "description": task.description,
+                "when": req.when,
+                "start_time": req.start_time,
+                "duration_minutes": req.duration_minutes,
+                "timezone": "Asia/Kolkata",
+            })
+            task.scheduled_start = parse_event_datetime(body["start"]["dateTime"])
+            task.scheduled_end = parse_event_datetime(body["end"]["dateTime"])
+            db.commit()
+            sync_task_to_calendar(db, task, schedule_on_calendar=True)
+        # No date/time was given — the task is created without a calendar
+        # event. A work slot is never invented.
     return {"data": task}
 
 
@@ -547,6 +724,20 @@ def add_task_to_calendar(db: Session, req: AddTaskToCalendarRequest) -> Dict[str
     task = db.query(Task).filter(Task.id == req.task_id).first()
     if not task:
         return {"data": {"error": f"Task not found: {req.task_id}"}}
+
+    # No date/time given → ask, never invent a work slot. This keeps a request
+    # like "put finish the BAJA wiring on my calendar" from creating an event
+    # at today 09:00 (already in the past) that vanishes from the calendar list.
+    if not _has_explicit_schedule({"when": req.when, "start_time": req.start_time}):
+        return {
+            "data": {
+                "error": (
+                    f"I found the task '{task.title}'. "
+                    "When should I schedule it on your calendar?"
+                ),
+                "reply_direct": True,
+            }
+        }
 
     body = build_calendar_event_body({
         "summary": task.title,

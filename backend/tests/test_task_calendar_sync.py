@@ -49,6 +49,10 @@ from app.services.tools import (
     CompleteTaskRequest,
 )
 from app.services.task_calendar_sync import delete_event_best_effort
+from app.services.tools import (
+    resolve_task_for_calendar,
+)
+from app.services.tool_dispatcher import execute_tool
 from app.models import Task
 from app.models.task import TaskStatus
 
@@ -542,3 +546,491 @@ def test_router_delete_calendar_unlinks_but_keeps_task(db_session, client):
     mock_delete.assert_called_once_with("evt_existing")
     # The task still exists.
     assert client.get(f"/tasks/{task.id}").status_code == 200
+
+
+# ----------------------------------------------------------------------
+# M. Deterministic task-reference resolution (the "Wiring Diagram" bug)
+# ----------------------------------------------------------------------
+# Database used by every regression below:
+#   - finish the BAJA wiring
+#   - work on the BAJA wiring   (correctly linked from the scheduled-task test)
+#   - Wiring Diagram            (INCORRECTLY got linked before the fix)
+#   - Final Test
+def _seed_wiring_tasks(db_session):
+    t1 = Task(title="finish the BAJA wiring", priority="MEDIUM")
+    t2 = Task(title="work on the BAJA wiring", priority="MEDIUM")
+    t3 = Task(title="Wiring Diagram", priority="LOW")
+    t4 = Task(title="Final Test", priority="MEDIUM")
+    for t in (t1, t2, t3, t4):
+        db_session.add(t)
+    db_session.commit()
+    for t in (t1, t2, t3, t4):
+        db_session.refresh(t)
+    return t1, t2, t3, t4
+
+
+def _clarify(planner_payload, user_message, db_session):
+    with patch("app.services.ai_service.Groq") as mock_groq, \
+         patch("app.services.ai_service.is_connected", return_value=False):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+        return chat_with_ai([{"role": "user", "content": user_message}], db_session)
+
+
+# ---- Resolver: exact task ID selected is correct (requirement 9) ----
+def test_resolver_work_on_baja_wiring_returns_exact_id(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the work on the BAJA wiring task")
+    assert result["status"] == "found"
+    assert result["task"].id == t2.id
+
+
+def test_resolver_finish_baja_wiring_returns_exact_id(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the finish the BAJA wiring task")
+    assert result["status"] == "found"
+    assert result["task"].id == t1.id
+
+
+def test_resolver_exact_title_picks_wiring_diagram(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "Wiring Diagram")
+    assert result["status"] == "found"
+    assert result["task"].id == t3.id
+
+
+# ---- Resolver: BAJA wiring is genuinely ambiguous, never silently chosen ----
+def test_resolver_baja_wiring_is_ambiguous_between_the_two_baja_tasks(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task")
+    assert result["status"] == "ambiguous"
+    assert [t.id for t in result["candidates"]] == [t1.id, t2.id]
+    # "Wiring Diagram" must not be a selected candidate here.
+    assert t3.id not in [t.id for t in result["candidates"]]
+
+
+def test_resolver_wiring_alone_is_ambiguous_never_wiring_diagram(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the wiring task")
+    # Never a silent single selection of the first "wiring" task.
+    assert result["status"] == "ambiguous"
+    assert t3.id in [t.id for t in result["candidates"]]
+
+
+def test_resolver_ambiguous_uses_explicit_task_id_as_tiebreaker(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task", task_id=t2.id)
+    assert result["status"] == "found"
+    assert result["task"].id == t2.id
+
+
+def test_resolver_not_found_is_honest(db_session):
+    _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "aircraft fuel pump")
+    assert result["status"] == "not_found"
+
+
+# ---- Dispatcher: task_title → deterministic task, or clarification ----
+def test_dispatcher_resolves_task_title_for_add(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_work"}) as mock_create:
+        result = execute_tool(
+            "add_task_to_calendar",
+            {"task_title": "the work on the BAJA wiring task", "when": "tomorrow"},
+            db_session,
+        )
+
+    task = result["data"]
+    assert task.id == t2.id
+    assert task.google_calendar_event_id == "evt_work"
+    assert mock_create.call_args.args[0]["summary"] == "work on the BAJA wiring"
+
+
+def test_dispatcher_ambiguous_returns_clarification_no_write(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        result = execute_tool(
+            "add_task_to_calendar",
+            {"task_title": "the BAJA wiring task"},
+            db_session,
+        )
+
+    data = result["data"]
+    assert data["reply_direct"] is True
+    assert "multiple tasks" in data["error"]
+    assert "finish the BAJA wiring" in data["error"]
+    assert "work on the BAJA wiring" in data["error"]
+    assert "Which one should I add to the calendar?" in data["error"]
+    mock_create.assert_not_called()
+
+
+# ---- Chat: full flow with the real dispatcher, mocked Google ----
+def test_chat_ambiguous_baja_wiring_returns_clarification_no_event(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        reply = _clarify(planner_payload, "Put the BAJA wiring task on my calendar.", db_session)
+
+    assert "multiple tasks" in reply
+    assert "finish the BAJA wiring" in reply
+    assert "work on the BAJA wiring" in reply
+    assert "Which one should I add to the calendar?" in reply
+    # No calendar event may be created while the task is ambiguous.
+    mock_create.assert_not_called()
+    assert t3.google_calendar_event_id is None
+
+
+def test_chat_put_wiring_diagram_links_the_correct_task(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "Wiring Diagram", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_wd"}) as mock_create:
+        reply = _clarify(planner_payload, "Put Wiring Diagram on my calendar.", db_session)
+
+    assert 'Added "Wiring Diagram" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    assert t3.google_calendar_event_id == "evt_wd"
+    # The BAJA tasks are untouched.
+    assert t1.google_calendar_event_id is None
+    assert t2.google_calendar_event_id is None
+
+
+def test_chat_put_work_task_links_the_correct_task(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the work on the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_work"}) as mock_create:
+        reply = _clarify(planner_payload, "Put the work on the BAJA wiring task on my calendar.", db_session)
+
+    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    assert t2.google_calendar_event_id == "evt_work"
+    assert t1.google_calendar_event_id is None
+
+
+def test_chat_remove_resolves_and_unlinks_correct_task(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t1.google_calendar_event_id = "evt_finish"
+    db_session.commit()
+    planner_payload = {
+        "tool": "remove_task_from_calendar",
+        "args": {"task_title": "the finish the BAJA wiring task"},
+    }
+    with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+        reply = _clarify(planner_payload, "Put the finish the BAJA wiring task off my calendar.", db_session)
+
+    assert 'Removed "finish the BAJA wiring" from your Google Calendar.' in reply
+    mock_delete.assert_called_once_with("evt_finish")
+    assert t1.google_calendar_event_id is None
+    assert t2.google_calendar_event_id is None
+
+
+def test_chat_already_linked_task_updates_not_duplicates(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_existing"
+    db_session.commit()
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the work on the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "update_calendar_event") as mock_update, \
+         patch.object(google_calendar, "create_calendar_event") as mock_create:
+        mock_update.return_value = {"id": "evt_existing"}
+        reply = _clarify(planner_payload, "Put the work on the BAJA wiring task on my calendar.", db_session)
+
+    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    assert t2.google_calendar_event_id == "evt_existing"
+
+
+def test_chat_wiring_alone_never_selects_wiring_diagram(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        reply = _clarify(planner_payload, "Put the wiring task on my calendar.", db_session)
+
+    # It must be ambiguous — "Wiring Diagram" must not win merely for "wiring".
+    assert "multiple tasks" in reply
+    mock_create.assert_not_called()
+    assert t3.google_calendar_event_id is None
+    assert t2.google_calendar_event_id is None
+
+
+# ---- Regression: repeated identical request, planner paraphrases the title ----
+# The user says "Put the work on the BAJA wiring task on my calendar" a second
+# time. The planner may paraphrase task_title to "the BAJA wiring task" — which
+# is genuinely ambiguous on its own. The server must resolve the user's ORIGINAL
+# message verbatim ("work on the BAJA wiring"), never degrade to the ambiguous
+# paraphrase, and must UPDATE the existing event rather than create a duplicate.
+def test_chat_repeated_request_paraphrased_title_still_resolves_exact_task(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_from_first_request"
+    db_session.commit()
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "update_calendar_event") as mock_update, \
+         patch.object(google_calendar, "create_calendar_event") as mock_create:
+        mock_update.return_value = {"id": "evt_from_first_request"}
+        reply = _clarify(planner_payload, "Put the work on the BAJA wiring task on my calendar.", db_session)
+
+    # The original message resolves to "work on the BAJA wiring" specifically,
+    # so the correct task is updated — no ambiguity, no duplicate event.
+    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    assert t2.google_calendar_event_id == "evt_from_first_request"
+    assert t1.google_calendar_event_id is None
+    assert t3.google_calendar_event_id is None
+
+
+def test_chat_repeated_request_paraphrased_title_creates_when_not_linked(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_work"}) as mock_create:
+        reply = _clarify(planner_payload, "Put the work on the BAJA wiring task on my calendar.", db_session)
+
+    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    assert t2.google_calendar_event_id == "evt_work"
+    assert t1.google_calendar_event_id is None
+    assert t3.google_calendar_event_id is None
+
+
+# ---- Regression: ambiguous message stays ambiguous even if the planner ----
+# ---- supplies a specific-looking title (server trusts the user's words). ----
+def test_chat_ambiguous_message_not_overridden_by_specific_planner_title(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the work on the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        reply = _clarify(planner_payload, "Put the BAJA wiring task on my calendar.", db_session)
+
+    # "the BAJA wiring task" alone is ambiguous between the two BAJA tasks.
+    assert "multiple tasks" in reply
+    assert "finish the BAJA wiring" in reply
+    assert "work on the BAJA wiring" in reply
+    assert "Which one should I add to the calendar?" in reply
+    mock_create.assert_not_called()
+    assert t1.google_calendar_event_id is None
+    assert t2.google_calendar_event_id is None
+    assert t3.google_calendar_event_id is None
+
+
+def test_chat_finish_request_resolves_finish_even_with_paraphrased_title(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "the BAJA wiring task", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_finish"}) as mock_create:
+        reply = _clarify(planner_payload, "Put the finish the BAJA wiring task on my calendar.", db_session)
+
+    assert 'Added "finish the BAJA wiring" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    assert t1.google_calendar_event_id == "evt_finish"
+    assert t2.google_calendar_event_id is None
+
+
+# ----------------------------------------------------------------------
+# N. Unspecified scheduling: never invent a date/time (Phase 1)
+# ----------------------------------------------------------------------
+def _unlinked_task(db_session, title="finish the BAJA wiring"):
+    task = Task(title=title, priority="MEDIUM")
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+    return task
+
+
+def test_add_task_to_calendar_without_schedule_asks_for_time(db_session):
+    task = _unlinked_task(db_session)
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        result = add_task_to_calendar_tool(db_session, AddTaskToCalendarRequest(task_id=task.id))
+
+    data = result["data"]
+    assert data["reply_direct"] is True
+    assert f"I found the task '{task.title}'." in data["error"]
+    assert "When should I schedule it on your calendar?" in data["error"]
+    mock_create.assert_not_called()
+    assert task.google_calendar_event_id is None
+    assert task.scheduled_start is None
+
+
+def test_chat_put_task_without_schedule_asks_for_time(db_session):
+    task = _unlinked_task(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "finish the BAJA wiring", "when": None, "start_time": None, "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        reply = _clarify(planner_payload, "Put finish the BAJA wiring on my calendar.", db_session)
+
+    assert "finish the BAJA wiring" in reply
+    assert "When should I schedule it on your calendar?" in reply
+    mock_create.assert_not_called()
+    assert task.google_calendar_event_id is None
+    assert task.scheduled_start is None
+
+
+def test_chat_put_task_tomorrow_at_time_creates_event(db_session):
+    task = _unlinked_task(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "finish the BAJA wiring", "when": "tomorrow", "start_time": "16:00", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_finish"}) as mock_create:
+        reply = _clarify(planner_payload, "Put finish the BAJA wiring on my calendar tomorrow at 4 PM.", db_session)
+
+    assert 'Added "finish the BAJA wiring" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    event_body = mock_create.call_args.args[0]
+    assert event_body["start"]["timeZone"] == "Asia/Kolkata"
+    assert event_body["start"]["dateTime"].endswith("+05:30")
+    assert task.google_calendar_event_id == "evt_finish"
+    assert task.scheduled_start is not None
+
+
+def test_add_task_to_calendar_explicit_date_and_time(db_session):
+    task = _unlinked_task(db_session)
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_date"}) as mock_create:
+        result = add_task_to_calendar_tool(db_session, AddTaskToCalendarRequest(
+            task_id=task.id, when="2026-08-21", start_time="15:00", duration_minutes=60,
+        ))
+
+    body = mock_create.call_args.args[0]
+    assert body["start"]["dateTime"].startswith("2026-08-21T15:00")
+    assert body["end"]["dateTime"].startswith("2026-08-21T16:00")
+    assert result["data"].google_calendar_event_id == "evt_date"
+
+
+def test_task_deadline_alone_does_not_become_work_slot(db_session):
+    task = Task(title="finish the BAJA wiring", priority="MEDIUM",
+                deadline=datetime(2026, 8, 25, 9, 0))
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        result = add_task_to_calendar_tool(db_session, AddTaskToCalendarRequest(task_id=task.id))
+
+    data = result["data"]
+    assert data["reply_direct"] is True
+    assert "When should I schedule it on your calendar?" in data["error"]
+    mock_create.assert_not_called()
+    assert task.google_calendar_event_id is None
+    assert task.scheduled_start is None
+    # The deadline is preserved and never turned into a work-session time.
+    assert task.deadline is not None
+
+
+def test_linked_task_update_with_explicit_schedule_remains_idempotent(db_session):
+    task = _linked_task(db_session)  # already has google_calendar_event_id="evt_existing"
+    with patch.object(google_calendar, "update_calendar_event") as mock_update, \
+         patch.object(google_calendar, "create_calendar_event") as mock_create:
+        mock_update.return_value = {"id": "evt_existing"}
+        result = add_task_to_calendar_tool(db_session, AddTaskToCalendarRequest(
+            task_id=task.id, when="tomorrow", start_time="10:00",
+        ))
+
+    assert result["data"].google_calendar_event_id == "evt_existing"
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+
+
+def test_create_task_schedule_without_time_does_not_create_event(db_session):
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        result = create_task_tool(db_session, CreateTaskRequest(
+            title="Wiring", priority="MEDIUM", schedule_on_calendar=True,
+        ))
+
+    task = result["data"]
+    assert task.id is not None
+    assert task.google_calendar_event_id is None
+    assert task.scheduled_start is None
+    mock_create.assert_not_called()
+
+
+def test_router_post_calendar_without_schedule_returns_400(db_session, client):
+    task = _unlinked_task(db_session)
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        resp = client.post(f"/tasks/{task.id}/calendar", json={})
+
+    assert resp.status_code == 400
+    assert "When should I schedule it" in resp.json()["detail"]
+    mock_create.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# O. Ambiguous-resolution UX: calendar state is shown, never used to pick
+# ----------------------------------------------------------------------
+def test_clarification_shows_calendar_state_both_unlinked(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task")
+    assert result["status"] == "ambiguous"
+    assert "finish the BAJA wiring — Not on calendar" in result["message"]
+    assert "work on the BAJA wiring — Not on calendar" in result["message"]
+    assert "Wiring Diagram" not in result["message"]
+
+
+def test_clarification_shows_calendar_state_one_linked(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_work"
+    db_session.commit()
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task")
+    assert result["status"] == "ambiguous"
+    assert "finish the BAJA wiring — Not on calendar" in result["message"]
+    assert "work on the BAJA wiring — 📅 On calendar" in result["message"]
+
+
+def test_clarification_shows_calendar_state_both_linked(db_session):
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t1.google_calendar_event_id = "evt_finish"
+    t2.google_calendar_event_id = "evt_work"
+    db_session.commit()
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task")
+    assert result["status"] == "ambiguous"
+    assert "finish the BAJA wiring — 📅 On calendar" in result["message"]
+    assert "work on the BAJA wiring — 📅 On calendar" in result["message"]
+
+
+def test_no_silent_selection_based_on_calendar_state(db_session):
+    # One of the two BAJA tasks is already linked. The resolver must still be
+    # ambiguous — calendar state is informational only and must never silently
+    # pick the linked (or the unlinked) task.
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_work"
+    db_session.commit()
+
+    result = resolve_task_for_calendar(db_session, "the BAJA wiring task")
+    assert result["status"] == "ambiguous"
+    assert [t.id for t in result["candidates"]] == [t1.id, t2.id]
+
+    # And through the dispatcher: clarification, never a write.
+    with patch.object(google_calendar, "create_calendar_event") as mock_create:
+        exec_result = execute_tool(
+            "add_task_to_calendar",
+            {"task_title": "the BAJA wiring task", "when": "tomorrow"},
+            db_session,
+        )
+    assert exec_result["data"]["reply_direct"] is True
+    mock_create.assert_not_called()
+    assert t1.google_calendar_event_id is None
+    assert t2.google_calendar_event_id == "evt_work"

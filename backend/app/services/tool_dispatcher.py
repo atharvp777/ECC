@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from sqlalchemy import func
 from app.models.project import Project
 from app.services.tools import (
@@ -36,12 +36,22 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
 }
 
 
-def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
+def execute_tool(
+    tool_name: str,
+    args: dict,
+    db: Session,
+    user_message: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Dispatch a tool call.
 
     Tool wrapper functions expect their arguments inside a Pydantic
     request object, so build the appropriate request model here.
+
+    ``user_message`` is the user's ORIGINAL message when the tool was planned
+    from natural language. For add_task_to_calendar / remove_task_from_calendar
+    it is the authoritative task reference — the planner may choose the
+    operation (and time) but must not paraphrase/generalize the task title.
     """
     tool_func = TOOL_FUNCTIONS.get(tool_name)
 
@@ -80,6 +90,41 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
                     return {"data": {"error": f'Project not found: "{project_name}"'}}
 
                 args["project_id"] = project.id
+
+        if tool_name in ("add_task_to_calendar", "remove_task_from_calendar"):
+            from app.services.tools import resolve_task_for_calendar
+
+            task_title = args.pop("task_title", None)
+            task_id = args.get("task_id")
+
+            # The user's ORIGINAL message is the authoritative task reference.
+            # The planner may choose the operation and time, but it must not
+            # paraphrase/generalize the task title, so resolve the message
+            # verbatim. task_id is only used as a tie-breaker.
+            reference = user_message if user_message else task_title
+
+            if reference is not None:
+                if not isinstance(reference, str) or not reference.strip():
+                    return {"data": {"error": "task_title must be a non-empty string"}}
+                resolution = resolve_task_for_calendar(
+                    db,
+                    reference,
+                    task_id=task_id,
+                    op="add" if tool_name == "add_task_to_calendar" else "remove",
+                )
+                if resolution["status"] != "found":
+                    # Ambiguous / not found: never pick silently. No calendar
+                    # write may happen until the user's intent is resolved.
+                    return {
+                        "data": {
+                            "error": resolution["message"],
+                            "reply_direct": True,
+                            "candidates": [t.id for t in resolution.get("candidates", [])],
+                        }
+                    }
+                args["task_id"] = resolution["task"].id
+            elif task_id is None:
+                return {"data": {"error": f"{tool_name} requires a task_title or a task_id"}}
 
         if tool_name == "create_calendar_event":
             from app.services.tools import build_calendar_event_body

@@ -433,14 +433,32 @@ Arguments:
 12. add_task_to_calendar
 Use when the user asks to put an EXISTING task on the calendar.
 Arguments:
-{{"task_id": integer, "when": "date phrase verbatim or null",
-  "start_time": "HH:MM or null", "duration_minutes": 60,
-  "timezone": "Asia/Kolkata"}}
+{{"task_title": "the task reference copied VERBATIM from the user's message —
+  exactly the words the user used (e.g. 'the work on the BAJA wiring task',
+  'Wiring Diagram'). NEVER paraphrase, generalize or shorten it. The server
+  resolves the user's original wording, so a verbatim copy is required.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null.",
+  "when": "the user's date phrase passed VERBATIM, e.g. 'tomorrow', 'Monday',
+           '2026-08-21'. MUST be null when the user gave NO date and NO time —
+           the server will then ask when to schedule it.",
+  "start_time": "explicit 24-hour local time 'HH:MM' if the user gave a time
+                 (e.g. '16:00' for 4pm), else null",
+  "duration_minutes": 60, "timezone": "Asia/Kolkata"}}
+NEVER guess a task_id for a task you cannot see listed with its ID.
+Do NOT change the task_title — copy it verbatim from the user's message.
+Do NOT invent a when/date — if the user gave no date or time, pass null.
 
 13. remove_task_from_calendar
 Use when the user asks to remove an EXISTING task from the calendar.
 Arguments:
-{{"task_id": integer}}
+{{"task_title": "the task reference copied VERBATIM from the user's message —
+  exactly the words the user used (e.g. 'the work on the BAJA wiring task',
+  'Wiring Diagram'). NEVER paraphrase, generalize or shorten it.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null."}}
+NEVER guess a task_id for a task you cannot see listed with its ID.
+Do NOT change the task_title — copy it verbatim from the user's message.
 
 RULES:
 
@@ -457,6 +475,14 @@ RULES:
   - If no project is specified, use null.
   - If no deadline is specified, use null.
   - If no priority is specified, use MEDIUM.
+- For add_task_to_calendar / remove_task_from_calendar:
+  - Copy the task_title VERBATIM from the user's message — never paraphrase,
+    generalize or shorten it. If the user said "the work on the BAJA wiring
+    task", keep those exact words; do NOT reduce it to "the BAJA wiring task".
+  - Never guess a task_id. The server resolves the user's wording.
+  - For add_task_to_calendar, pass when/start_time VERBATIM from the user. If
+    the user gave no date and no time, pass null — do NOT default to "today"
+    or "tomorrow"; the server asks the user what time to schedule.
 - Do not assign a task to a project merely because it is the first
   project in the context.
 - CALENDAR ROUTING (IMPORTANT):
@@ -605,9 +631,23 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
         # ---- 3️⃣ Execute the tool -------------------------------------------
         try:
-            result = execute_tool(tool_name, args, db)
+            result = execute_tool(
+                tool_name,
+                args,
+                db,
+                user_message=last_user if planned_tool_call else None,
+            )
             # Handle tool execution errors before trying to render the result.
             data = result.get("data")
+
+            # Task-reference resolution results (ambiguous/not-found) are already
+            # user-facing clarification messages — render them directly.
+            if (
+                isinstance(data, dict)
+                and data.get("reply_direct")
+                and tool_name in ("add_task_to_calendar", "remove_task_from_calendar")
+            ):
+                return data["error"]
 
             if isinstance(data, dict) and "error" in data:
                 if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:

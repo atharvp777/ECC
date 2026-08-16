@@ -1,4 +1,5 @@
 import json
+import datetime as _dt
 from datetime import datetime, timedelta, date
 from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
@@ -15,6 +16,14 @@ from app.services.tools import build_calendar_event_body
 from app.core.database import Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+
+class _FakeDatetime(_dt.datetime):
+    """Fixed 'now' at 2026-08-16 22:30 IST for get_upcoming_events tests."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return _dt.datetime(2026, 8, 16, 22, 30, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
 
 
 # ----------------------------------------------------------------------
@@ -471,3 +480,133 @@ def test_reminder_request_success_path_still_works(db_session):
 
     assert "Created calendar event" in reply
     assert "Get white shirt from ayu" in reply
+
+
+# ----------------------------------------------------------------------
+# 6. Calendar listing window: today from start of local day (Phase 2)
+# ----------------------------------------------------------------------
+def _events_service(items):
+    service = MagicMock()
+    service.events().list.return_value.execute.return_value = {"items": items}
+    return service
+
+
+def _patch_calendar_context(service):
+    return (
+        patch.object(google_calendar, "_load_credentials", return_value=object()),
+        patch.object(google_calendar, "build", return_value=service),
+        patch.object(google_calendar, "datetime", _FakeDatetime),
+    )
+
+
+def test_get_upcoming_events_uses_start_of_local_day():
+    service = _events_service([])
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        google_calendar.get_upcoming_events(days=14, max_results=50)
+
+    kwargs = service.events().list.call_args.kwargs
+    # Fixed "now" is 2026-08-16 22:30 IST → window starts at 00:00 IST today.
+    assert kwargs["timeMin"] == "2026-08-16T00:00:00+05:30"
+    assert kwargs["timeMax"] == "2026-08-30T22:30:00+05:30"
+    assert kwargs["maxResults"] == 50
+
+
+def test_get_upcoming_events_returns_event_starting_earlier_today():
+    items = [{
+        "id": "evt_early",
+        "summary": "finish the BAJA wiring",
+        "start": {"dateTime": "2026-08-16T09:00:00+05:30", "timeZone": "Asia/Kolkata"},
+        "end": {"dateTime": "2026-08-16T10:00:00+05:30", "timeZone": "Asia/Kolkata"},
+    }]
+    service = _events_service(items)
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        events = google_calendar.get_upcoming_events(days=14)
+
+    assert [e["id"] for e in events] == ["evt_early"]
+    assert events[0]["title"] == "finish the BAJA wiring"
+    assert events[0]["start"] == "2026-08-16T09:00:00+05:30"
+    assert events[0]["all_day"] is False
+
+
+def test_get_upcoming_events_returns_future_event():
+    items = [{
+        "id": "evt_future",
+        "summary": "ECC Calendar Test",
+        "start": {"dateTime": "2026-08-17T11:00:00+05:30"},
+        "end": {"dateTime": "2026-08-17T12:00:00+05:30"},
+    }]
+    service = _events_service(items)
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        events = google_calendar.get_upcoming_events(days=14)
+
+    assert [e["id"] for e in events] == ["evt_future"]
+
+
+def test_get_upcoming_events_drops_event_that_ended_before_today():
+    items = [{
+        "id": "evt_yesterday",
+        "summary": "yesterday",
+        "start": {"dateTime": "2026-08-15T10:00:00+05:30"},
+        "end": {"dateTime": "2026-08-15T11:00:00+05:30"},
+    }]
+    service = _events_service(items)
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        events = google_calendar.get_upcoming_events(days=14)
+
+    assert events == []
+
+
+def test_get_upcoming_events_kolkata_midnight_boundary():
+    # 2026-08-16T00:00:00+05:30 is 00:00 IST today (= 18:30Z on Aug 15) → keep.
+    # An event ending exactly at 00:00 IST today ended before today → drop.
+    items = [
+        {
+            "id": "midnight",
+            "summary": "boundary start",
+            "start": {"dateTime": "2026-08-16T00:00:00+05:30"},
+            "end": {"dateTime": "2026-08-16T01:00:00+05:30"},
+        },
+        {
+            "id": "at_boundary",
+            "summary": "ends at boundary",
+            "start": {"dateTime": "2026-08-15T23:00:00+05:30"},
+            "end": {"dateTime": "2026-08-16T00:00:00+05:30"},
+        },
+    ]
+    service = _events_service(items)
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        events = google_calendar.get_upcoming_events(days=14)
+
+    assert [e["id"] for e in events] == ["midnight"]
+
+
+def test_get_upcoming_events_keeps_all_day_event_today():
+    items = [{
+        "id": "allday",
+        "summary": "All Day Thing",
+        "start": {"date": "2026-08-16"},
+        "end": {"date": "2026-08-17"},
+    }]
+    service = _events_service(items)
+    with patch.object(google_calendar, "_load_credentials", return_value=object()), \
+         patch.object(google_calendar, "build", return_value=service), \
+         patch.object(google_calendar, "datetime", _FakeDatetime):
+        events = google_calendar.get_upcoming_events(days=14)
+
+    assert [e["id"] for e in events] == ["allday"]
+    assert events[0]["all_day"] is True
+
+
+def test_get_upcoming_events_empty_when_not_connected():
+    with patch.object(google_calendar, "_load_credentials", return_value=None):
+        assert google_calendar.get_upcoming_events() == []

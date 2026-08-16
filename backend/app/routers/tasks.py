@@ -133,6 +133,10 @@ def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
     # task stays and calendar_sync_error is populated. Never roll back.
     if schedule_on_calendar:
         if task.scheduled_start is None:
+            # No date/time given → never invent a work slot. The task is created
+            # without a calendar event and the user is asked for a time.
+            if not (when or start_time):
+                return task
             body = build_calendar_event_body({
                 "summary": task.title,
                 "description": task.description,
@@ -238,6 +242,17 @@ def link_task_to_calendar(task_id: int, payload: TaskCalendarRequest, db: Sessio
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # No date/time given → ask, never invent a work slot (which could be in the
+    # past and disappear from the upcoming-calendar view).
+    if (
+        payload.scheduled_start is None
+        and not (payload.when or payload.start_time)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"I found the task '{task.title}'. When should I schedule it on your calendar?",
+        )
 
     if payload.scheduled_start is not None:
         task.scheduled_start = _normalize_tz(payload.scheduled_start, payload.timezone)
