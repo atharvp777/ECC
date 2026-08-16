@@ -90,7 +90,9 @@ def github_repos(limit: int = Query(30)):
 
 @router.get("/github/issues")
 def github_issues(repo: str = Query(...), limit: int = Query(20)):
-    from app.services.github_service import get_open_issues
+    from app.services.github_service import get_open_issues, is_connected
+    if not is_connected():
+        return {"connected": False, "issues": []}
     try:
         return get_open_issues(repo, limit)
     except Exception as e:
@@ -99,7 +101,9 @@ def github_issues(repo: str = Query(...), limit: int = Query(20)):
 
 @router.get("/github/prs")
 def github_prs(repo: str = Query(...), limit: int = Query(20)):
-    from app.services.github_service import get_open_prs
+    from app.services.github_service import get_open_prs, is_connected
+    if not is_connected():
+        return {"connected": False, "prs": []}
     try:
         return get_open_prs(repo, limit)
     except Exception as e:
@@ -108,7 +112,9 @@ def github_prs(repo: str = Query(...), limit: int = Query(20)):
 
 @router.get("/github/commits")
 def github_commits(repo: str = Query(...), limit: int = Query(15)):
-    from app.services.github_service import get_recent_commits
+    from app.services.github_service import get_recent_commits, is_connected
+    if not is_connected():
+        return {"connected": False, "commits": []}
     try:
         return get_recent_commits(repo, limit)
     except Exception as e:
@@ -125,7 +131,12 @@ class PushTaskRequest(BaseModel):
 @router.post("/github/push-task")
 def push_task_to_github(payload: PushTaskRequest):
     """Create a GitHub issue from a task."""
-    from app.services.github_service import create_issue_from_task
+    from app.services.github_service import create_issue_from_task, is_connected
+    if not is_connected():
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub is not connected. Add GITHUB_PAT to backend/.env and restart the backend.",
+        )
     try:
         issue = create_issue_from_task(
             repo_full_name=payload.repo,

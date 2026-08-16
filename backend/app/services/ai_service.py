@@ -1,3 +1,5 @@
+import logging
+import groq
 from groq import Groq
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
@@ -7,6 +9,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.services.tool_dispatcher import execute_tool
 from app.services.google_calendar import get_upcoming_events, is_connected
+
+logger = logging.getLogger(__name__)
+
+
+class AIServiceError(Exception):
+    """Raised when an AI request fails and only a safe message may reach the user."""
 
 # ----------------------------------------------------------------------
 # System prompt & context helpers (unchanged from previous version)
@@ -23,6 +31,34 @@ Your personality:
 - You know about: eBAJA, AgroVault, Formula SAE EV rules, mechanical engineering, Python, software development.
 
 When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
+
+
+def _friendly_ai_error_message(exc: Exception) -> str:
+    """Return a safe, human-readable message for an AI request failure.
+
+    The real exception is logged by the caller; the frontend only ever sees
+    one of these strings — never a traceback or internal detail.
+    """
+    if not settings.GROQ_API_KEY:
+        return (
+            "The AI service isn't configured yet. "
+            "Add GROQ_API_KEY to backend/.env and restart the backend."
+        )
+
+    auth_error = getattr(groq, "AuthenticationError", None)
+    rate_error = getattr(groq, "RateLimitError", None)
+    conn_error = getattr(groq, "APIConnectionError", None)
+    status_error = getattr(groq, "APIStatusError", None)
+
+    if auth_error and isinstance(exc, auth_error):
+        return "The AI API key is invalid or was rejected. Check GROQ_API_KEY in backend/.env."
+    if rate_error and isinstance(exc, rate_error):
+        return "The AI service is rate-limited right now. Please wait a moment and try again."
+    if conn_error and isinstance(exc, conn_error):
+        return "Couldn't reach the AI service. Check your internet connection and try again."
+    if status_error and isinstance(exc, status_error):
+        return "The AI service returned an error. Please try again in a moment."
+    return "I couldn't process that request because of an unexpected AI service error. Please try again."
 
 def _build_context(db: Session) -> str:
     now = datetime.now(timezone.utc)
@@ -283,7 +319,8 @@ or:
 
         return parsed
 
-    except Exception:
+    except Exception as exc:
+        logger.warning("Tool planner failed for request; falling back to general chat: %s", exc)
         return None
 
 def chat_with_ai(messages: List[dict], db: Session) -> str:
@@ -399,21 +436,41 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             if render:
                 return render()
 
-            # Fallback for any other tool
-            return "Tool executed successfully."
+            # Fallback for any tool without a dedicated renderer. This is not
+            # a fake success: error results were already handled above.
+            logger.warning("No reply renderer registered for tool '%s'", tool_name)
+            return f"Done — {tool_name.replace('_', ' ')} succeeded."
         except Exception as exc:
-            return f"Error executing tool: {str(exc)}"
+            logger.exception("Tool execution failed for '%s'", tool_name)
+            return (
+                "Sorry, I couldn't complete that action. The tool ran into an "
+                "unexpected error. Please try again."
+            )
 
     # ---- 4️⃣ No tool request – fall back to LLM ----------------------------
-    client = Groq(api_key=settings.GROQ_API_KEY)
-    full_messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + context},
-        *messages,
-    ]
-    response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=full_messages,
-        max_tokens=1024,
-        temperature=0.7,
-    )
-    return response.choices[0].message.content
+    if not settings.GROQ_API_KEY:
+        logger.error("GROQ_API_KEY is not configured – AI chat unavailable")
+        return (
+            "The AI service isn't configured yet. "
+            "Add GROQ_API_KEY to backend/.env and restart the backend."
+        )
+
+    try:
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        full_messages = [
+            {"role": "system", "content": SYSTEM_PROMPT + context},
+            *messages,
+        ]
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=full_messages,
+            max_tokens=1024,
+            temperature=0.7,
+        )
+        content = response.choices[0].message.content
+        if not content or not isinstance(content, str):
+            raise ValueError("AI returned an empty or malformed response")
+        return content
+    except Exception as exc:
+        logger.exception("AI chat completion failed")
+        raise AIServiceError(_friendly_ai_error_message(exc)) from exc

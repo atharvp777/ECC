@@ -32,6 +32,7 @@ class ProjectRead(ProjectBase):
     created_at: datetime
     updated_at: datetime
     task_count: int = 0
+    done_tasks: int = 0
 
 
 class ProjectReadWithStats(ProjectRead):

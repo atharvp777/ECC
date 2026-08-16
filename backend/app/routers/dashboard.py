@@ -25,7 +25,8 @@ class DashboardStats(BaseModel):
 @router.get("/stats", response_model=DashboardStats)
 def get_dashboard_stats(db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
-    end_of_today = now.replace(hour=23, minute=59, second=59)
+    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_today = now.replace(hour=23, minute=59, second=59, microsecond=999999)
     end_of_week = now + timedelta(days=7)
 
     total_projects = db.query(func.count(Project.id)).scalar() or 0
@@ -45,7 +46,11 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
     )
     due_today = (
         db.query(func.count(Task.id))
-        .filter(Task.deadline <= end_of_today, Task.status != TaskStatus.DONE)
+        .filter(
+            Task.deadline >= start_of_today,
+            Task.deadline <= end_of_today,
+            Task.status != TaskStatus.DONE,
+        )
         .scalar() or 0
     )
     critical_tasks = (

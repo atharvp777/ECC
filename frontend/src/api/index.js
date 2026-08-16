@@ -1,4 +1,5 @@
 import api from "./client";
+import { API_BASE_URL } from "../config";
 
 // Dashboard
 export const getDashboardStats = () => api.get("/dashboard/stats").then(r => r.data);
@@ -30,6 +31,7 @@ export const uploadDocument = (formData) =>
   api.post("/documents/upload", formData, { headers: { "Content-Type": "multipart/form-data" } }).then(r => r.data);
 export const updateDocument = (id, data) => api.patch(`/documents/${id}`, data).then(r => r.data);
 export const deleteDocument = (id) => api.delete(`/documents/${id}`);
+export const getDocumentDownloadUrl = (id) => `${API_BASE_URL}/documents/${id}/download`;
 
 // Meetings
 export const getMeetings = (params = {}) => api.get("/meetings/", { params }).then(r => r.data);

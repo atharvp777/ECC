@@ -23,6 +23,33 @@ TOKEN_FILE = settings.KNOWLEDGE_DIR / "google_token.json"
 OAUTH_STATE_FILE = settings.KNOWLEDGE_DIR / "google_oauth_state.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]  # writable scope
 
+# Locations where tokens were stored by older versions of the app.
+_LEGACY_TOKEN_PATHS = [
+    Path(__file__).resolve().parents[2] / "knowledge" / "google_token.json",
+]
+
+
+def _migrate_legacy_token() -> None:
+    """Preserve an existing Google token that lives in a legacy location.
+
+    The canonical location is settings.KNOWLEDGE_DIR/google_token.json.
+    If a token exists only in an older path, move it there once so OAuth,
+    runtime and reads all agree on a single token file.
+    """
+    if TOKEN_FILE.exists():
+        return
+    for legacy in _LEGACY_TOKEN_PATHS:
+        try:
+            if legacy.exists():
+                TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+                legacy.replace(TOKEN_FILE)
+                return
+        except OSError:
+            pass
+
+
+_migrate_legacy_token()
+
 
 def _get_flow():
     from google_auth_oauthlib.flow import Flow

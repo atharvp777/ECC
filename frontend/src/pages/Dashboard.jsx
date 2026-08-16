@@ -44,6 +44,7 @@ export default function Dashboard() {
   const [today, setToday]       = useState([]);
   const [upcoming, setUpcoming] = useState([]);
   const [loading, setLoading]   = useState(true);
+  const [actionError, setActionError] = useState(null);
   const navigate = useNavigate();
 
   const load = async () => {
@@ -72,8 +73,16 @@ export default function Dashboard() {
 
   const handleDone = async (task) => {
     const newStatus = task.status === "done" ? "todo" : "done";
-    await updateTask(task.id, { status: newStatus });
-    load();
+    setActionError(null);
+    try {
+      await updateTask(task.id, { status: newStatus });
+      load();
+    } catch (error) {
+      console.error("Dashboard task update failed:", error);
+      setActionError(
+        `Couldn't ${newStatus === "done" ? "complete" : "reopen"} "${task.title}". Check the backend connection and try again.`
+      );
+    }
   };
 
   if (loading) return <div className="spinner" />;
@@ -125,6 +134,15 @@ export default function Dashboard() {
           }
         </div>
       </div>
+
+      {actionError && (
+        <div
+          className="card"
+          style={{ marginTop: 16, borderColor: "var(--danger)" }}
+        >
+          <p style={{ color: "var(--danger)", fontSize: 13 }}>⚠ {actionError}</p>
+        </div>
+      )}
 
       {!stats && !loading && (
   <div

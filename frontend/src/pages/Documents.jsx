@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
-import { getDocuments, uploadDocument, deleteDocument, getProjects, searchDocs, askDocs, ingestDoc, indexStatus } from "../api";
-import { Upload, Trash2, FileText, FileImage, File, Search, MessageSquare, RefreshCw, X } from "lucide-react";
+import { getDocuments, uploadDocument, deleteDocument, getProjects, searchDocs, askDocs, ingestDoc, indexStatus, getDocumentDownloadUrl } from "../api";
+import { Upload, Trash2, FileText, FileImage, File, Search, MessageSquare, RefreshCw, X, Download } from "lucide-react";
 
 const ICONS = {
   "application/pdf": FileText,
@@ -237,7 +237,7 @@ export default function Documents() {
                   <span style={{ color: isIndexed ? "var(--success)" : "var(--warning)" }}>
                     {isIndexed ? "✓ indexed" : "⏳ pending"}
                   </span>
-                </div>
+</div>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
                 {!isIndexed && (
@@ -245,6 +245,9 @@ export default function Documents() {
                     <RefreshCw size={12} style={{ animation: reingesting === doc.id ? "spin .6s linear infinite" : "none" }} />
                   </button>
                 )}
+                <a className="btn btn-ghost btn-sm" title="Download original" href={getDocumentDownloadUrl(doc.id)}>
+                  <Download size={12} />
+                </a>
                 <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(doc.id)}><Trash2 size={12} /></button>
               </div>
             </div>

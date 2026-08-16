@@ -14,11 +14,24 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 @router.get("/", response_model=list[ProjectRead])
 def list_projects(db: Session = Depends(get_db)):
     projects = db.query(Project).order_by(Project.created_at.desc()).all()
+
+    total_counts = dict(
+        db.query(Task.project_id, func.count(Task.id))
+        .group_by(Task.project_id)
+        .all()
+    )
+    done_counts = dict(
+        db.query(Task.project_id, func.count(Task.id))
+        .filter(Task.status == TaskStatus.DONE)
+        .group_by(Task.project_id)
+        .all()
+    )
+
     result = []
     for p in projects:
-        task_count = db.query(func.count(Task.id)).filter(Task.project_id == p.id).scalar()
         data = ProjectRead.model_validate(p)
-        data.task_count = task_count or 0
+        data.task_count = total_counts.get(p.id, 0)
+        data.done_tasks = done_counts.get(p.id, 0)
         result.append(data)
     return result
 
