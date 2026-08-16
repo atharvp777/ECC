@@ -37,7 +37,7 @@ function SectionCard({ icon: Icon, title, color, children }) {
 }
 
 // ── Google Calendar ────────────────────────────────────────────────────────
-function GoogleCalendarSection({ connected, onRefresh }) {
+function GoogleCalendarSection({ connected, canWrite, onRefresh }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -92,6 +92,12 @@ function GoogleCalendarSection({ connected, onRefresh }) {
             <li>Copy Client ID & Client Secret → add to <code style={{ background: "var(--border)", padding: "0 4px", borderRadius: 3 }}>.env</code></li>
             <li>Restart backend → click Connect above</li>
           </ol>
+        </div>
+      )}
+
+      {connected && !canWrite && (
+        <div style={{ background: "rgba(245,158,11,.12)", borderRadius: 10, padding: "10px 14px", fontSize: 12, marginBottom: 16, color: "var(--text)" }}>
+          ⚠ Read-only access — reconnect to enable event creation.
         </div>
       )}
 
@@ -231,7 +237,7 @@ export default function Integrations() {
         <h2 style={{ fontSize: 18, fontWeight: 700 }}>Integrations</h2>
         <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Connect external tools to your Command Center.</p>
       </div>
-      <GoogleCalendarSection connected={!!status?.google_calendar} onRefresh={load} />
+      <GoogleCalendarSection connected={!!status?.google_calendar} canWrite={!!status?.google_calendar_can_write} onRefresh={load} />
       <GitHubSection connected={!!status?.github} />
     </div>
   );

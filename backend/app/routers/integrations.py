@@ -14,10 +14,14 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 def integrations_status():
     """Which integrations are currently connected."""
     from app.services.google_calendar import is_connected as gcal_connected
+    from app.services.google_calendar import has_write_scope as gcal_can_write
     from app.services.github_service  import is_connected as gh_connected
+    gcal_ok = gcal_connected()
     return {
-        "google_calendar": gcal_connected(),
-        "github":          gh_connected(),
+        "google_calendar":            gcal_ok,
+        "google_calendar_connected":  gcal_ok,
+        "google_calendar_can_write":  gcal_ok and gcal_can_write(),
+        "github":                     gh_connected(),
     }
 
 

@@ -4,6 +4,7 @@ from groq import Groq
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -11,6 +12,100 @@ from app.services.tool_dispatcher import execute_tool
 from app.services.google_calendar import get_upcoming_events, is_connected
 
 logger = logging.getLogger(__name__)
+
+# ----------------------------------------------------------------------
+# Calendar write routing constants
+# ----------------------------------------------------------------------
+# The system timezone is UTC+05:30. The planner is told about the current
+# local time, but every date is resolved server-side, never by the model.
+SYSTEM_TIMEZONE = "Asia/Kolkata"
+
+CALENDAR_WRITE_TOOLS = {
+    "create_calendar_event",
+    "update_calendar_event",
+    "delete_calendar_event",
+}
+
+TASK_TOOLS = {"create_task", "update_task", "complete_task"}
+
+_CALENDAR_NOT_CREATED_MESSAGE = (
+    "I couldn't add that event to Google Calendar. No calendar event was created."
+)
+
+_WRITE_ACCESS_ERROR_HINTS = (
+    "write access",
+    "reconnect",
+    "re-authorize",
+    "not connected",
+    "not granted",
+    "permission",
+    "insufficient",
+)
+
+
+def _is_calendar_read_request(text: str) -> bool:
+    """True when the user is only asking to see calendar events."""
+    lower = text.lower()
+    markers = (
+        "what", "list", "show", "view", "upcoming", "display",
+        "do i have", "any events", "next event", "what's on", "whats on",
+        "my calendar events", "check my calendar", "see my calendar",
+    )
+    return any(m in lower for m in markers)
+
+
+def _is_calendar_write_request(text: str) -> bool:
+    """True when the user clearly asks to add/schedule a calendar event.
+
+    Read intents ("what's on my calendar?") never count as writes. A generic
+    "remind me to..." without a date is left to the planner.
+    """
+    lower = text.lower().strip()
+    if not lower:
+        return False
+    if _is_calendar_read_request(lower):
+        return False
+
+    # 1. Explicit calendar reference with a scheduling verb.
+    if "calendar" in lower and any(
+        v in lower for v in ("add", "create", "put", "schedule", "book", "remind", "set", "make")
+    ):
+        return True
+
+    # 2. A scheduled reminder: reminder wording + a date/time anchor.
+    if ("remind" in lower or "reminder" in lower) and any(
+        d in lower
+        for d in ("tomorrow", "today", "next", " at ", "on monday", "on tuesday",
+                  "on wednesday", "on thursday", "on friday", "on saturday", "on sunday")
+    ):
+        return True
+
+    # 3. Scheduling/appointment wording.
+    if any(
+        v in lower
+        for v in ("schedule", "appointment", "book a meeting", "schedule a meeting",
+                  "schedule an event", "book an appointment", "set an appointment",
+                  "set a meeting", "put a meeting")
+    ):
+        return True
+
+    return False
+
+
+def _calendar_write_failure_message(error_text: str) -> str:
+    """Turn a failed calendar write into an honest, user-readable message."""
+    lower = error_text.lower()
+    if any(hint in lower for hint in _WRITE_ACCESS_ERROR_HINTS):
+        return error_text
+    return _CALENDAR_NOT_CREATED_MESSAGE
+
+
+def _render_created_event(data) -> str:
+    """Render a created calendar event only from a successful API response."""
+    summary = data.get("summary") or "(no title)"
+    start = data.get("start") or {}
+    start_dt = start.get("dateTime") or start.get("date") or ""
+    return f'Created calendar event "{summary}" starting at {start_dt}.'
 
 
 class AIServiceError(Exception):
@@ -205,6 +300,8 @@ def plan_tool_call(user_message: str, context: str) -> Optional[dict]:
         {"tool": "...", "args": {...}}
         or None when no tool action is required.
     """
+    system_timezone = SYSTEM_TIMEZONE
+    now_local = datetime.now(ZoneInfo(system_timezone))
 
     planner_prompt = f"""
 You are the tool-planning layer for an Engineering Command Center.
@@ -246,6 +343,33 @@ Arguments:
 8. list_calendar_events
 Arguments: {{}}
 
+9. create_calendar_event
+Use ONLY when the user asks to add, schedule, book or get a reminder about a
+real calendar event / appointment on a date.
+Arguments:
+{{"summary": "string",
+  "description": "string or null",
+  "when": "the user's date phrase passed through VERBATIM, e.g. 'tomorrow',
+          'next Monday', '2026-08-20', 'today'. null only if the user gave
+          no date/time at all.",
+  "start_time": "explicit 24-hour local time 'HH:MM' if the user gave a time
+                 (e.g. '15:00' for 3pm), else null",
+  "duration_minutes": "integer, default 60",
+  "timezone": "Asia/Kolkata"}}
+Do NOT compute start/end yourself. The current date is supplied below and the
+'when' phrase is resolved by the server.
+
+10. update_calendar_event
+Arguments:
+{{"event_id": "string (must come from the user's request or a recent listing — never invent one)",
+  "summary": "string", "description": "string or null",
+  "when": "string or null", "start_time": "string or null",
+  "duration_minutes": 60, "timezone": "Asia/Kolkata"}}
+
+11. delete_calendar_event
+Arguments:
+{{"event_id": "string (must come from the user's request — never invent one)"}}
+
 RULES:
 
 - Return NONE if the user is only asking a general question.
@@ -263,9 +387,27 @@ RULES:
   - If no priority is specified, use MEDIUM.
 - Do not assign a task to a project merely because it is the first
   project in the context.
+- CALENDAR ROUTING (IMPORTANT):
+  - "reminder", "schedule", "appointment", "event", "meeting",
+    "put this on my calendar", "add this to my calendar" describe a real
+    scheduled calendar event → use create_calendar_event (or
+    list_calendar_events for "what's on my calendar?").
+  - Do NOT convert a calendar request into create_task.
+  - A task is appropriate only when the user asks to create/manage a task or todo.
+  - "remind me tomorrow to ..." should create a calendar event when the user is
+    clearly asking for a scheduled reminder.
+  - "what are my calendar events?" remains list_calendar_events.
+- Never invent a calendar event_id. Only pass one the user mentioned.
 - Return ONLY valid JSON.
 - Do not use markdown.
 - Do not explain your decision.
+
+CURRENT DATE CONTEXT:
+The current date/time on the server is {now_local:%Y-%m-%d %H:%M %A}
+in timezone {system_timezone} (UTC+05:30).
+Use it only to understand relative dates like "today" or "tomorrow". Always
+pass the user's own date phrase in "when" verbatim — never compute the event
+start/end times yourself.
 
 LIVE CONTEXT:
 {context}
@@ -281,6 +423,12 @@ or:
 
 {{"tool":"create_task","args":{{"title":"Check battery wiring",
 "priority":"MEDIUM","deadline":null,"project_name":"BAJA HV"}}}}
+
+or for a calendar event:
+
+{{"tool":"create_calendar_event","args":{{"summary":"Get white shirt from ayu",
+"description":null,"when":"tomorrow","start_time":null,
+"duration_minutes":60,"timezone":"Asia/Kolkata"}}}}
 """
 
     try:
@@ -340,6 +488,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         (m["content"] for m in reversed(messages) if m["role"] == "user"),
         "",
     )
+    calendar_write_requested = _is_calendar_write_request(last_user)
     tool_call = extract_tool_call(last_user)
     planned_tool_call = False
 
@@ -355,6 +504,16 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             if args.get("project_name") is None and args.get("project_id") is not None:
                 return "Tool 'create_task' failed: planner must use project_name, not project_id."
 
+        # A calendar write must never be silently converted into a task. If the
+        # planner mis-routes a clear calendar request to a task tool, refuse
+        # without creating anything and report honestly.
+        if calendar_write_requested and tool_name in TASK_TOOLS:
+            return (
+                "I couldn't add that to your Google Calendar — no calendar event "
+                "was created. To schedule a calendar event, use a clear time, e.g. "
+                "'schedule a meeting tomorrow at 3pm'."
+            )
+
         # ---- 3️⃣ Execute the tool -------------------------------------------
         try:
             result = execute_tool(tool_name, args, db)
@@ -362,12 +521,14 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             data = result.get("data")
 
             if isinstance(data, dict) and "error" in data:
+                if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
+                    return _calendar_write_failure_message(data["error"])
                 return f"Tool '{tool_name}' failed: {data['error']}"
 
             if data is None:
+                if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
+                    return _CALENDAR_NOT_CREATED_MESSAGE
                 return f"Tool '{tool_name}' failed: no result was returned."
-
-            
 
             # ---- 4️⃣ Render a concise, user‑friendly reply --------------------
             reply_map = {
@@ -418,10 +579,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 else "No upcoming events."
             ),
 
-            "create_calendar_event": lambda: (
-                f'Created calendar event "{data["summary"]}" '
-                f'starting at {data["start"]}.'
-            ),
+            "create_calendar_event": lambda: _render_created_event(data),
 
             "update_calendar_event": lambda: (
                 f"Updated calendar event {data['id']}."
@@ -431,6 +589,15 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 f"Deleted calendar event {data['event_id']}."
             ),
         }
+
+            # Only claim a calendar event was created after the API returned a
+            # real event ID. Never fabricate success.
+            if calendar_write_requested and tool_name == "create_calendar_event":
+                if not data.get("id"):
+                    logger.warning(
+                        "create_calendar_event returned no event ID; not reporting success"
+                    )
+                    return _CALENDAR_NOT_CREATED_MESSAGE
 
             render = reply_map.get(tool_name)
             if render:
@@ -442,12 +609,29 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             return f"Done — {tool_name.replace('_', ' ')} succeeded."
         except Exception as exc:
             logger.exception("Tool execution failed for '%s'", tool_name)
+            if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
+                return _calendar_write_failure_message(str(exc))
             return (
                 "Sorry, I couldn't complete that action. The tool ran into an "
                 "unexpected error. Please try again."
             )
 
-    # ---- 4️⃣ No tool request – fall back to LLM ----------------------------
+    # ---- 4️⃣ Calendar write requested but no write tool ran -----------------
+    # Never let the free-form LLM claim a calendar event was created.
+    if calendar_write_requested:
+        from app.services.google_calendar import has_write_scope
+
+        if not is_connected():
+            return (
+                "Google Calendar isn't connected. Connect it before creating "
+                "calendar events."
+            )
+        if not has_write_scope():
+            from app.services.google_calendar import WRITE_SCOPE_ERROR_MESSAGE
+            return WRITE_SCOPE_ERROR_MESSAGE
+        return _CALENDAR_NOT_CREATED_MESSAGE
+
+    # ---- 5️⃣ No tool request – fall back to LLM ----------------------------
     if not settings.GROQ_API_KEY:
         logger.error("GROQ_API_KEY is not configured – AI chat unavailable")
         return (

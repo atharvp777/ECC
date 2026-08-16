@@ -1,7 +1,9 @@
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
+import re
 from app.models import Project, Task
 from app.models.project import ProjectCategory
 from app.services.google_calendar import (
@@ -67,6 +69,128 @@ class UpdateCalendarEventRequest(BaseModel):
 
 class DeleteCalendarEventRequest(BaseModel):
     event_id: str
+
+
+# ---------- Calendar event body resolution (deterministic, server-side) ----------
+# The system timezone is UTC+05:30. The planner never guesses "now"; it passes a
+# natural-language `when` phrase and the server resolves the concrete datetime.
+SYSTEM_TIMEZONE = "Asia/Kolkata"
+DEFAULT_EVENT_HOUR = 9
+DEFAULT_DURATION_MINUTES = 60
+
+_WEEKDAYS = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+
+
+def _parse_time(phrase: str) -> Optional[tuple]:
+    """Extract (hour, minute) from 'HH:MM' or '3pm' style text, or None."""
+    if not phrase:
+        return None
+    match = re.search(r"(\d{1,2}):(\d{2})", phrase)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return (hour, minute)
+    match = re.search(r"(\d{1,2})\s*(am|pm)", phrase.lower())
+    if match:
+        hour = int(match.group(1)) % 12
+        if match.group(2) == "pm":
+            hour += 12
+        return (hour, 0)
+    return None
+
+
+def _resolve_event_date(when: str, now: datetime) -> date:
+    """Resolve a natural-language date phrase against the server clock."""
+    text = (when or "").strip().lower()
+    if not text:
+        return now.date()
+
+    # Full date embedded anywhere in the phrase: 2026-08-20 or 2026-08-20T10:00:00
+    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if match:
+        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+    if "today" in text:
+        return now.date()
+    if "tomorrow" in text:
+        return now.date() + timedelta(days=1)
+
+    for name, index in _WEEKDAYS.items():
+        if name in text:
+            if "next" in text:
+                days_ahead = (index - now.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+            else:
+                days_ahead = (index - now.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7
+            return now.date() + timedelta(days=days_ahead)
+
+    return now.date()
+
+
+def _resolve_event_datetime(args: Dict[str, Any], now: datetime) -> datetime:
+    """Combine when + start_time into a timezone-aware start datetime."""
+    when = (args.get("when") or "").strip()
+    start_time = (args.get("start_time") or "").strip()
+
+    # Honor a full ISO datetime passed directly in `when`.
+    full = re.search(
+        r"(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?",
+        when,
+    )
+    if full and not start_time:
+        return datetime(
+            int(full.group(1)), int(full.group(2)), int(full.group(3)),
+            int(full.group(4)), int(full.group(5)),
+            int(full.group(6) or 0),
+            tzinfo=now.tzinfo,
+        )
+
+    parsed_time = _parse_time(start_time) or _parse_time(when) or (DEFAULT_EVENT_HOUR, 0)
+    event_date = _resolve_event_date(when, now)
+    return datetime.combine(event_date, time(parsed_time[0], parsed_time[1]), tzinfo=now.tzinfo)
+
+
+def build_calendar_event_body(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a Google Calendar API event body from planner-style arguments.
+
+    Supports, in order of precedence:
+      1. A complete `event_data` body passed through verbatim (existing contract).
+      2. Structured `start`/`end` objects passed directly.
+      3. `summary` + `when`/`start_time`/`duration_minutes` resolved server-side.
+    """
+    if isinstance(args.get("event_data"), dict):
+        return dict(args["event_data"])
+
+    if isinstance(args.get("start"), dict) and isinstance(args.get("end"), dict):
+        body = {k: v for k, v in args.items() if k in ("summary", "description", "start", "end", "location")}
+        return body
+
+    tz_name = args.get("timezone") or SYSTEM_TIMEZONE
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo(SYSTEM_TIMEZONE)
+        tz_name = SYSTEM_TIMEZONE
+
+    now = datetime.now(tz)
+    start = _resolve_event_datetime(args, now)
+    duration = int(args.get("duration_minutes") or DEFAULT_DURATION_MINUTES)
+    if duration <= 0:
+        duration = DEFAULT_DURATION_MINUTES
+    end = start + timedelta(minutes=duration)
+
+    body: Dict[str, Any] = {"summary": (args.get("summary") or "").strip() or "(no title)"}
+    if args.get("description"):
+        body["description"] = str(args["description"])
+    body["start"] = {"dateTime": start.isoformat(), "timeZone": tz_name}
+    body["end"] = {"dateTime": end.isoformat(), "timeZone": tz_name}
+    return body
 
 
 # ---------- Wrapper implementations ----------

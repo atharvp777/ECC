@@ -23,6 +23,19 @@ TOKEN_FILE = settings.KNOWLEDGE_DIR / "google_token.json"
 OAUTH_STATE_FILE = settings.KNOWLEDGE_DIR / "google_oauth_state.json"
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]  # writable scope
 
+# Scopes that grant write access to calendar events. calendar.readonly is
+# deliberately NOT included.
+WRITE_SCOPES = {
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/calendar.events",
+}
+
+# Message shown when the stored token can read but cannot write events.
+WRITE_SCOPE_ERROR_MESSAGE = (
+    "Google Calendar is connected, but write access isn't authorized. "
+    "Please reconnect Google Calendar to grant calendar write access."
+)
+
 # Locations where tokens were stored by older versions of the app.
 _LEGACY_TOKEN_PATHS = [
     Path(__file__).resolve().parents[2] / "knowledge" / "google_token.json",
@@ -224,6 +237,54 @@ def is_connected() -> bool:
 
 
 # ----------------------------------------------------------------------
+# Write-scope detection
+# ----------------------------------------------------------------------
+def _token_scopes() -> Optional[List[str]]:
+    """Return the scopes stored with the saved token, or None if unavailable."""
+    if not TOKEN_FILE.exists():
+        return None
+    try:
+        data = json.loads(TOKEN_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    scopes = data.get("scopes")
+    if scopes is None:
+        return None
+    if isinstance(scopes, str):
+        return [scopes]
+    if isinstance(scopes, list):
+        return [s for s in scopes if isinstance(s, str)]
+    return None
+
+
+def has_write_scope() -> bool:
+    """Return True only when the stored token includes a writable Calendar scope.
+
+    A token scoped to calendar.readonly (or a missing/unknown scope) is treated
+    as read-only — reads work, writes must be refused.
+    """
+    scopes = _token_scopes()
+    if not scopes:
+        return False
+    normalized = {s.rstrip("/") for s in scopes}
+    return bool(normalized.intersection(WRITE_SCOPES))
+
+
+def _require_write_access() -> None:
+    """Raise PermissionError when calendar writes are not possible.
+
+    Called before any write request so we never call Google with a token that is
+    known to be read-only.
+    """
+    if not is_connected():
+        raise PermissionError(
+            "Google Calendar isn't connected. Connect it before creating calendar events."
+        )
+    if not has_write_scope():
+        raise PermissionError(WRITE_SCOPE_ERROR_MESSAGE)
+
+
+# ----------------------------------------------------------------------
 # Write operations (create / update / delete)
 # ----------------------------------------------------------------------
 def _get_service():
@@ -236,6 +297,7 @@ def _get_service():
 
 def create_calendar_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
     """Create a new event. Returns the created event representation."""
+    _require_write_access()
     service = _get_service()
     try:
         created = service.events().insert(calendarId="primary", body=event_data).execute()
@@ -257,6 +319,7 @@ def create_calendar_event(event_data: Dict[str, Any]) -> Dict[str, Any]:
 
 def update_calendar_event(event_id: str, event_data: Dict[str, Any]) -> Dict[str, Any]:
     """Update an existing event. Returns the updated event representation."""
+    _require_write_access()
     service = _get_service()
     try:
         updated = service.events().update(
@@ -279,6 +342,7 @@ def update_calendar_event(event_id: str, event_data: Dict[str, Any]) -> Dict[str
 
 def delete_calendar_event(event_id: str) -> Dict[str, str]:
     """Delete an existing event. Returns a confirmation message."""
+    _require_write_access()
     service = _get_service()
     try:
         service.events().delete(calendarId="primary", eventId=event_id).execute()

@@ -77,6 +77,19 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
 
                 args["project_id"] = project.id
 
+        if tool_name == "create_calendar_event":
+            from app.services.tools import build_calendar_event_body
+            args = {"event_data": build_calendar_event_body(args)}
+        elif tool_name == "update_calendar_event":
+            event_id = args.get("event_id")
+            event_data = args.get("event_data")
+            if event_id is None:
+                return {"data": {"error": "update_calendar_event requires an event_id"}}
+            if not isinstance(event_data, dict):
+                from app.services.tools import build_calendar_event_body
+                event_data = build_calendar_event_body(args)
+            args = {"event_id": event_id, "event_data": event_data}
+
         from app.services.tools import (
             ListProjectsRequest,
             CreateProjectRequest,
