@@ -16,7 +16,14 @@ class TaskBase(BaseModel):
 
 
 class TaskCreate(TaskBase):
-    pass
+    # Calendar scheduling (optional). scheduled_start/end are the "when the
+    # user intends to work on the task" times, distinct from `deadline`.
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    schedule_on_calendar: bool = False
+    when: str | None = None
+    start_time: str | None = None
+    duration_minutes: int = 60
 
 
 class TaskUpdate(BaseModel):
@@ -30,6 +37,13 @@ class TaskUpdate(BaseModel):
     is_recurring: bool | None = None
     recurrence_rule: str | None = None
     project_id: int | None = None
+    # Calendar scheduling (optional)
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    schedule_on_calendar: bool = False
+    when: str | None = None
+    start_time: str | None = None
+    duration_minutes: int = 60
 
 
 class TaskRead(TaskBase):
@@ -40,3 +54,8 @@ class TaskRead(TaskBase):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
+    # Calendar scheduling state (server-owned; the client never supplies an ID)
+    google_calendar_event_id: str | None = None
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    calendar_sync_error: str | None = None

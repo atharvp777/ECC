@@ -14,6 +14,8 @@ from app.services.tools import (
     create_calendar_event as cce,
     update_calendar_event as uce,
     delete_calendar_event as dce,
+    add_task_to_calendar as atc,
+    remove_task_from_calendar as rtc,
 )
 from datetime import datetime, timezone, timedelta
 
@@ -29,6 +31,8 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "create_calendar_event": cce,
     "update_calendar_event": uce,
     "delete_calendar_event": dce,
+    "add_task_to_calendar": atc,
+    "remove_task_from_calendar": rtc,
 }
 
 
@@ -102,6 +106,8 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
             CreateCalendarEventRequest,
             UpdateCalendarEventRequest,
             DeleteCalendarEventRequest,
+            AddTaskToCalendarRequest,
+            RemoveTaskFromCalendarRequest,
         )
 
         request_models = {
@@ -116,6 +122,8 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
             "create_calendar_event": CreateCalendarEventRequest,
             "update_calendar_event": UpdateCalendarEventRequest,
             "delete_calendar_event": DeleteCalendarEventRequest,
+            "add_task_to_calendar": AddTaskToCalendarRequest,
+            "remove_task_from_calendar": RemoveTaskFromCalendarRequest,
         }
 
         request_model = request_models.get(tool_name)

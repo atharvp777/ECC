@@ -19,6 +19,12 @@ export const createTask = (data) => api.post("/tasks/", data).then(r => r.data);
 export const updateTask = (id, data) => api.patch(`/tasks/${id}`, data).then(r => r.data);
 export const deleteTask = (id) => api.delete(`/tasks/${id}`);
 
+// Tasks ↔ Google Calendar
+export const linkTaskToCalendar = (id, data) =>
+  api.post(`/tasks/${id}/calendar`, data).then(r => r.data);
+export const unlinkTaskFromCalendar = (id) =>
+  api.delete(`/tasks/${id}/calendar`).then(r => r.data);
+
 // Notes
 export const getNotes = (params = {}) => api.get("/notes/", { params }).then(r => r.data);
 export const createNote = (data) => api.post("/notes/", data).then(r => r.data);

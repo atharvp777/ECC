@@ -38,6 +38,22 @@ class Task(Base):
     estimated_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actual_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # Google Calendar scheduling.
+    #   deadline       = "when the task is due"
+    #   scheduled_*    = "when the user intends to work on the task"
+    # The existence of google_calendar_event_id is the sync state; there is no
+    # separate calendar_synced flag.
+    google_calendar_event_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
+    scheduled_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    scheduled_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    calendar_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     is_recurring: Mapped[bool] = mapped_column(Boolean, default=False)
     recurrence_rule: Mapped[str | None] = mapped_column(String(100), nullable=True)  # e.g. "daily", "weekly"
 

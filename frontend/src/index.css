@@ -135,6 +135,10 @@ body {
 .badge-todo     { background: rgba(100,116,139,.15);color: var(--muted); }
 .badge-in_progress { background: rgba(79,124,255,.15); color: var(--accent); }
 .badge-blocked  { background: rgba(239,68,68,.12); color: var(--danger); }
+.badge-danger   { background: rgba(239,68,68,.15); color: var(--danger); }
+
+/* Form helpers */
+.form-hint { margin: 4px 0 0; }
 
 /* Task list */
 .task-list { display: flex; flex-direction: column; gap: 8px; }

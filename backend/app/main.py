@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import engine, Base
+from app.core.migrations import run_idempotent_migrations
 
 # Import models so SQLAlchemy can discover them for table creation
 import app.models  # noqa: F401
@@ -23,6 +24,9 @@ from app.routers import (
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
+
+# Add columns introduced after the first release (safe to run repeatedly)
+run_idempotent_migrations(engine)
 
 app = FastAPI(
     title=settings.APP_NAME,

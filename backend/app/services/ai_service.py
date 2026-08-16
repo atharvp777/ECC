@@ -108,6 +108,52 @@ def _render_created_event(data) -> str:
     return f'Created calendar event "{summary}" starting at {start_dt}.'
 
 
+def _safe_sync_reason(error_text: str) -> str:
+    """Turn a stored calendar_sync_error into a safe, user-readable reason."""
+    if not error_text:
+        return "unknown Google Calendar error"
+    lower = error_text.lower()
+    if any(hint in lower for hint in _WRITE_ACCESS_ERROR_HINTS):
+        return error_text
+    return "Google Calendar is unavailable right now"
+
+
+def _render_task_created(data) -> str:
+    """Render a created task, honestly including calendar sync results.
+
+    Task succeeds + Calendar succeeds → both reported.
+    Task succeeds + Calendar fails   → task reported, safe sync reason given.
+    """
+    if data.google_calendar_event_id and not data.calendar_sync_error:
+        return f'Created task "{data.title}" and added it to your Google Calendar.'
+    if data.calendar_sync_error:
+        reason = _safe_sync_reason(data.calendar_sync_error)
+        return f'Created task "{data.title}", but I couldn\'t add it to your Google Calendar: {reason}'
+    tail = f' in project ID {data.project_id}.' if data.project_id else "."
+    return f'Created task "{data.title}"{tail}'
+
+
+def _render_task_updated(data) -> str:
+    base = f"Updated task {data.id}."
+    if data.calendar_sync_error:
+        return f"{base} Calendar sync failed: {_safe_sync_reason(data.calendar_sync_error)}"
+    return base
+
+
+def _render_task_calendar_linked(data) -> str:
+    if data.google_calendar_event_id and not data.calendar_sync_error:
+        return f'Added "{data.title}" to your Google Calendar.'
+    reason = _safe_sync_reason(data.calendar_sync_error)
+    return f'I couldn\'t add "{data.title}" to your Google Calendar: {reason}'
+
+
+def _render_task_calendar_removed(data) -> str:
+    if not data.google_calendar_event_id and not data.calendar_sync_error:
+        return f'Removed "{data.title}" from your Google Calendar.'
+    reason = _safe_sync_reason(data.calendar_sync_error)
+    return f'I couldn\'t remove "{data.title}" from your Google Calendar: {reason}'
+
+
 class AIServiceError(Exception):
     """Raised when an AI request fails and only a safe message may reach the user."""
 
@@ -326,15 +372,29 @@ Arguments:
 Arguments: {{}}
 
 5. create_task
-Arguments:
+Use for a task or todo, including a task the user wants to work on at a
+scheduled time. Arguments:
 {{"title": "string",
   "priority": "LOW | MEDIUM | HIGH | CRITICAL",
-  "deadline": "YYYY-MM-DDTHH:MM:SS or null",
-  "project_name": "string or null"}}
+  "deadline_when": "the user's DUE-DATE phrase passed VERBATIM, e.g. 'Friday',
+                    'tomorrow', '2026-08-20'. null when there is no due date.",
+  "project_name": "string or null",
+  "when": "the user's WORK-TIME date phrase passed VERBATIM, e.g. 'tomorrow',
+           'Friday', '2026-08-20'. null unless the user scheduled work time.",
+  "start_time": "explicit 24-hour local time 'HH:MM' if the user gave a time
+                 (e.g. '15:00' for 3pm), else null",
+  "duration_minutes": "integer, default 60",
+  "schedule_on_calendar": "true ONLY when the user wants this task blocked as
+                            calendar work time (work on X at TIME / from A to B)."}}
+Do NOT compute dates/times yourself.
 
 6. update_task
 Arguments:
-{{"task_id": integer}}
+{{"task_id": integer, "title": "string or null",
+  "priority": "string or null", "deadline_when": "string or null",
+  "status": "string or null", "when": "string or null",
+  "start_time": "string or null", "duration_minutes": 60,
+  "schedule_on_calendar": "true or false"}}
 
 7. complete_task
 Arguments:
@@ -370,6 +430,18 @@ Arguments:
 Arguments:
 {{"event_id": "string (must come from the user's request — never invent one)"}}
 
+12. add_task_to_calendar
+Use when the user asks to put an EXISTING task on the calendar.
+Arguments:
+{{"task_id": integer, "when": "date phrase verbatim or null",
+  "start_time": "HH:MM or null", "duration_minutes": 60,
+  "timezone": "Asia/Kolkata"}}
+
+13. remove_task_from_calendar
+Use when the user asks to remove an EXISTING task from the calendar.
+Arguments:
+{{"task_id": integer}}
+
 RULES:
 
 - Return NONE if the user is only asking a general question.
@@ -388,11 +460,22 @@ RULES:
 - Do not assign a task to a project merely because it is the first
   project in the context.
 - CALENDAR ROUTING (IMPORTANT):
-  - "reminder", "schedule", "appointment", "event", "meeting",
-    "put this on my calendar", "add this to my calendar" describe a real
-    scheduled calendar event → use create_calendar_event (or
-    list_calendar_events for "what's on my calendar?").
-  - Do NOT convert a calendar request into create_task.
+  - DEADLINE vs SCHEDULE:
+    - "finish X by Friday", "submit by ...", "due Friday", "create a task to
+      finish X tomorrow" describe when a task is DUE → create_task with
+      deadline_when and schedule_on_calendar=false (no calendar event).
+    - "work on X Friday from 3 PM to 4 PM", "schedule time tomorrow to X",
+      "work on X tomorrow at 4 PM" describe time BLOCKED for work → create_task
+      with when/start_time/duration_minutes and schedule_on_calendar=true
+      (one operation that creates the task AND its calendar event).
+  - "reminder", "appointment", "event", "meeting", "book" that are NOT a task
+    describe a real scheduled calendar event → use create_calendar_event (or
+    list_calendar_events for "what are my calendar events?").
+  - "put my <task> on my calendar" / "add my <task> to my calendar" →
+    add_task_to_calendar. "remove my <task> from my calendar" →
+    remove_task_from_calendar.
+  - Do NOT convert a calendar request into create_task, UNLESS it is genuinely
+    a task being scheduled for work (then schedule_on_calendar=true).
   - A task is appropriate only when the user asks to create/manage a task or todo.
   - "remind me tomorrow to ..." should create a calendar event when the user is
     clearly asking for a scheduled reminder.
@@ -506,8 +589,14 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
         # A calendar write must never be silently converted into a task. If the
         # planner mis-routes a clear calendar request to a task tool, refuse
-        # without creating anything and report honestly.
-        if calendar_write_requested and tool_name in TASK_TOOLS:
+        # without creating anything and report honestly — unless the planner
+        # correctly chose create_task WITH schedule_on_calendar, which is the
+        # legitimate "create task + calendar event" orchestration path.
+        if (
+            calendar_write_requested
+            and tool_name in TASK_TOOLS
+            and not (tool_name == "create_task" and args.get("schedule_on_calendar"))
+        ):
             return (
                 "I couldn't add that to your Google Calendar — no calendar event "
                 "was created. To schedule a calendar event, use a clear time, e.g. "
@@ -553,18 +642,9 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 else "No tasks found."
             ),
 
-            "create_task": lambda: (
-                f'Created task "{data.title}"'
-                + (
-                    f' in project ID {data.project_id}.'
-                    if data.project_id
-                    else "."
-                )
-            ),
+            "create_task": lambda: _render_task_created(data),
 
-            "update_task": lambda: (
-                f"Updated task {data.id}."
-            ),
+            "update_task": lambda: _render_task_updated(data),
 
             "complete_task": lambda: (
                 f"Marked task {data.id} as completed."
@@ -588,6 +668,10 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             "delete_calendar_event": lambda: (
                 f"Deleted calendar event {data['event_id']}."
             ),
+
+            "add_task_to_calendar": lambda: _render_task_calendar_linked(data),
+
+            "remove_task_from_calendar": lambda: _render_task_calendar_removed(data),
         }
 
             # Only claim a calendar event was created after the API returned a

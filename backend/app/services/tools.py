@@ -12,6 +12,11 @@ from app.services.google_calendar import (
     update_calendar_event as gc_update_calendar_event,
     delete_calendar_event as gc_delete_calendar_event,
 )
+from app.services.task_calendar_sync import (
+    create_or_update_event as tcs_create_or_update_event,
+    unlink_event as tcs_unlink_event,
+    delete_event_best_effort as tcs_delete_event_best_effort,
+)
 
 
 # ---------- Request schemas ----------
@@ -38,7 +43,14 @@ class CreateTaskRequest(BaseModel):
     title: str
     priority: str = "MEDIUM"
     deadline: Optional[str] = None
+    deadline_when: Optional[str] = None
     project_id: Optional[int] = None
+    # Calendar scheduling (optional). `when`/`start_time` are the user's
+    # verbatim phrases; the server resolves them in Asia/Kolkata.
+    when: Optional[str] = None
+    start_time: Optional[str] = None
+    duration_minutes: int = 60
+    schedule_on_calendar: bool = False
 
 
 class UpdateTaskRequest(BaseModel):
@@ -46,8 +58,14 @@ class UpdateTaskRequest(BaseModel):
     title: Optional[str] = None
     priority: Optional[str] = None
     deadline: Optional[str] = None
+    deadline_when: Optional[str] = None
     project_id: Optional[int] = None
     status: Optional[str] = None
+    # Calendar scheduling (optional)
+    when: Optional[str] = None
+    start_time: Optional[str] = None
+    duration_minutes: int = 60
+    schedule_on_calendar: bool = False
 
 
 class CompleteTaskRequest(BaseModel):
@@ -69,6 +87,18 @@ class UpdateCalendarEventRequest(BaseModel):
 
 class DeleteCalendarEventRequest(BaseModel):
     event_id: str
+
+
+class AddTaskToCalendarRequest(BaseModel):
+    task_id: int
+    when: Optional[str] = None
+    start_time: Optional[str] = None
+    duration_minutes: int = 60
+    timezone: str = "Asia/Kolkata"
+
+
+class RemoveTaskFromCalendarRequest(BaseModel):
+    task_id: int
 
 
 # ---------- Calendar event body resolution (deterministic, server-side) ----------
@@ -193,6 +223,155 @@ def build_calendar_event_body(args: Dict[str, Any]) -> Dict[str, Any]:
     return body
 
 
+def parse_event_datetime(value: str) -> datetime:
+    """Parse an ISO dateTime produced by build_calendar_event_body()."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def build_event_body_from_datetimes(
+    start_dt: datetime,
+    end_dt: datetime,
+    summary: str,
+    description: Optional[str] = None,
+    timezone: str = SYSTEM_TIMEZONE,
+) -> Dict[str, Any]:
+    """Build a Google Calendar event body from concrete datetimes.
+
+    Naive datetimes (e.g. re-loaded from SQLite, which does not preserve
+    offsets) are interpreted as the system timezone so the event is never sent
+    to Google as a floating (offset-less) time.
+    """
+    tz = ZoneInfo(timezone)
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=tz)
+    else:
+        start_dt = start_dt.astimezone(tz)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=tz)
+    else:
+        end_dt = end_dt.astimezone(tz)
+    return {
+        "summary": (summary or "").strip() or "(no title)",
+        "description": description or None,
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": timezone},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": timezone},
+    }
+
+
+def resolve_task_schedule(
+    update_data: Dict[str, Any],
+    when: Optional[str] = None,
+    start_time: Optional[str] = None,
+    duration_minutes: int = 60,
+    timezone: str = SYSTEM_TIMEZONE,
+) -> Dict[str, Any]:
+    """Fill scheduled_start/scheduled_end in ``update_data`` from raw inputs.
+
+    Precedence:
+      1. Direct scheduled_start / scheduled_end datetimes (normalized to the
+         system timezone; a missing end is derived from duration_minutes).
+      2. Natural-language when/start_time resolved by build_calendar_event_body.
+
+    Never lets the LLM compute final datetimes.
+    """
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        tz = ZoneInfo(SYSTEM_TIMEZONE)
+        timezone = SYSTEM_TIMEZONE
+
+    if update_data.get("scheduled_start") is not None:
+        start = update_data["scheduled_start"]
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=tz)
+        else:
+            start = start.astimezone(tz)
+        end = update_data.get("scheduled_end")
+        if end is not None:
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=tz)
+            else:
+                end = end.astimezone(tz)
+        elif duration_minutes:
+            end = start + timedelta(minutes=duration_minutes)
+        update_data["scheduled_start"] = start
+        update_data["scheduled_end"] = end
+    elif when or start_time:
+        body = build_calendar_event_body({
+            "summary": "task",
+            "when": when,
+            "start_time": start_time,
+            "duration_minutes": duration_minutes,
+            "timezone": timezone,
+        })
+        update_data["scheduled_start"] = parse_event_datetime(body["start"]["dateTime"])
+        update_data["scheduled_end"] = parse_event_datetime(body["end"]["dateTime"])
+    return update_data
+
+
+def resolve_deadline(deadline_when: Optional[str], now: Optional[datetime] = None) -> Optional[datetime]:
+    """Resolve a natural-language deadline phrase to a datetime.
+
+    Only the date matters for a deadline; a time in the phrase is honored when
+    given, otherwise it resolves to the default event hour on that date.
+    """
+    if not deadline_when:
+        return None
+    body = build_calendar_event_body({
+        "summary": "deadline",
+        "when": deadline_when,
+        "timezone": SYSTEM_TIMEZONE,
+    })
+    return parse_event_datetime(body["start"]["dateTime"])
+
+
+def sync_task_to_calendar(
+    db: Session,
+    task,
+    *,
+    schedule_on_calendar: bool = False,
+    when: Optional[str] = None,
+    start_time: Optional[str] = None,
+    duration_minutes: int = 60,
+    timezone: str = SYSTEM_TIMEZONE,
+    schedule_changed: bool = False,
+    title_changed: bool = False,
+) -> None:
+    """Create/update the linked Google event for a task.
+
+    - ``schedule_on_calendar=True`` forces a create (if unlinked) or update
+      (if already linked).
+    - A linked task whose title or schedule changed is updated too.
+    - An already-linked task is NEVER re-inserted — it is always updated.
+
+    Failures are stored on the task (calendar_sync_error) and the task row is
+    never rolled back. Safe no-op otherwise.
+    """
+    if not (schedule_on_calendar or (task.google_calendar_event_id and (schedule_changed or title_changed))):
+        return
+    if task.scheduled_start is not None:
+        end_dt = task.scheduled_end or (task.scheduled_start + timedelta(minutes=duration_minutes or 60))
+        event_data = build_event_body_from_datetimes(
+            task.scheduled_start, end_dt, task.title, task.description, timezone,
+        )
+    elif schedule_on_calendar:
+        event_data = build_calendar_event_body({
+            "summary": task.title,
+            "description": task.description,
+            "when": when,
+            "start_time": start_time,
+            "duration_minutes": duration_minutes,
+            "timezone": timezone,
+        })
+    else:
+        # Linked task updated without a schedule change: summary-only body is
+        # enough for Google's events().update().
+        event_data = {"summary": task.title}
+        if task.description:
+            event_data["description"] = task.description
+    tcs_create_or_update_event(db, task, event_data)
+
+
 # ---------- Wrapper implementations ----------
 def _normalize_project_category(category: str | ProjectCategory | None) -> str:
     if category is None:
@@ -253,6 +432,8 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
         deadline = datetime.fromisoformat(
             req.deadline.replace("Z", "+00:00")
         )
+    elif getattr(req, "deadline_when", None):
+        deadline = resolve_deadline(req.deadline_when)
 
     if req.project_id is not None and not _project_exists(db, req.project_id):
         return {"data": {"error": f"Project not found: {req.project_id}"}}
@@ -266,6 +447,22 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     db.add(task)
     db.commit()
     db.refresh(task)
+
+    # Task is committed first. Calendar sync is best-effort: on failure the
+    # task stays and calendar_sync_error is populated. Never roll back.
+    if getattr(req, "schedule_on_calendar", False):
+        body = build_calendar_event_body({
+            "summary": task.title,
+            "description": task.description,
+            "when": req.when,
+            "start_time": req.start_time,
+            "duration_minutes": req.duration_minutes,
+            "timezone": "Asia/Kolkata",
+        })
+        task.scheduled_start = parse_event_datetime(body["start"]["dateTime"])
+        task.scheduled_end = parse_event_datetime(body["end"]["dateTime"])
+        db.commit()
+        sync_task_to_calendar(db, task, schedule_on_calendar=True)
     return {"data": task}
 
 
@@ -274,12 +471,29 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     if not task:
         return {"data": None}
     update_data = req.dict(exclude_unset=True)
+    update_data.pop("task_id", None)
+    schedule_on_calendar = update_data.pop("schedule_on_calendar", False)
+    when = update_data.pop("when", None)
+    start_time = update_data.pop("start_time", None)
+    duration_minutes = update_data.pop("duration_minutes", 60)
+
+    # Resolve scheduling fields deterministically (server-side, Asia/Kolkata).
+    if update_data.get("scheduled_start") is not None or (when or start_time):
+        resolve_task_schedule(
+            update_data, when=when, start_time=start_time, duration_minutes=duration_minutes,
+        )
+
+    title_changed = "title" in update_data
+    schedule_changed = "scheduled_start" in update_data or "scheduled_end" in update_data
+
     for field, value in update_data.items():
         if field == "deadline" and value is not None:
             # Convert ISO string to datetime; handle Z suffix for UTC
             if value.endswith("Z"):
                 value = value[:-1] + "+00:00"
             task.deadline = datetime.fromisoformat(value)
+        elif field == "deadline_when":
+            task.deadline = resolve_deadline(value)
         elif field == "project_id" and value is not None:
             if not _project_exists(db, value):
                 return {"data": {"error": f"Project not found: {value}"}}
@@ -288,6 +502,13 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
             setattr(task, field, value)
     db.commit()
     db.refresh(task)
+
+    sync_task_to_calendar(
+        db, task,
+        schedule_on_calendar=bool(schedule_on_calendar),
+        when=when, start_time=start_time, duration_minutes=duration_minutes,
+        schedule_changed=schedule_changed, title_changed=title_changed,
+    )
     return {"data": task}
 
 
@@ -319,3 +540,34 @@ def update_calendar_event(db: Session, req: UpdateCalendarEventRequest) -> Dict[
 def delete_calendar_event(db: Session, req: DeleteCalendarEventRequest) -> Dict[str, Any]:
     gc_delete_calendar_event(req.event_id)
     return {"data": {"status": "deleted", "event_id": req.event_id}}
+
+
+def add_task_to_calendar(db: Session, req: AddTaskToCalendarRequest) -> Dict[str, Any]:
+    """Link an existing task to Google Calendar (idempotent)."""
+    task = db.query(Task).filter(Task.id == req.task_id).first()
+    if not task:
+        return {"data": {"error": f"Task not found: {req.task_id}"}}
+
+    body = build_calendar_event_body({
+        "summary": task.title,
+        "description": task.description,
+        "when": req.when,
+        "start_time": req.start_time,
+        "duration_minutes": req.duration_minutes,
+        "timezone": req.timezone,
+    })
+    task.scheduled_start = parse_event_datetime(body["start"]["dateTime"])
+    task.scheduled_end = parse_event_datetime(body["end"]["dateTime"])
+    db.commit()
+    # Already-linked tasks are updated, never duplicated (see sync helper).
+    sync_task_to_calendar(db, task, schedule_on_calendar=True)
+    return {"data": task}
+
+
+def remove_task_from_calendar(db: Session, req: RemoveTaskFromCalendarRequest) -> Dict[str, Any]:
+    """Unlink an existing task from Google Calendar; the ECC task is kept."""
+    task = db.query(Task).filter(Task.id == req.task_id).first()
+    if not task:
+        return {"data": {"error": f"Task not found: {req.task_id}"}}
+    tcs_unlink_event(db, task)
+    return {"data": task}
