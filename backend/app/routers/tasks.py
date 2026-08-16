@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 
 from app.core.database import get_db
 from app.models.task import Task, TaskStatus, TaskPriority
+from app.models.project import Project
 from app.schemas.task import TaskCreate, TaskUpdate, TaskRead
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -68,6 +69,14 @@ def get_upcoming_tasks(days: int = Query(7), db: Session = Depends(get_db)):
 
 @router.post("/", response_model=TaskRead, status_code=status.HTTP_201_CREATED)
 def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
+    if payload.project_id is not None:
+        project = db.query(Project).filter(Project.id == payload.project_id).first()
+        if not project:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project {payload.project_id} does not exist",
+            )
+
     task = Task(**payload.model_dump())
     db.add(task)
     db.commit()
@@ -90,6 +99,14 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Task not found")
 
     updates = payload.model_dump(exclude_unset=True)
+
+    if updates.get("project_id") is not None:
+        project = db.query(Project).filter(Project.id == updates["project_id"]).first()
+        if not project:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Project {updates['project_id']} does not exist",
+            )
 
     # Auto-set completed_at when marking done
     if updates.get("status") == TaskStatus.DONE and task.status != TaskStatus.DONE:

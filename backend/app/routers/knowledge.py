@@ -89,10 +89,13 @@ def ask(payload: AskRequest):
 def index_status():
     """How many chunks are currently indexed."""
     from app.services.knowledge_service import CHUNKS_FILE
-    if not CHUNKS_FILE.exists():
+    if not CHUNKS_FILE.exists() or CHUNKS_FILE.stat().st_size == 0:
         return {"indexed_chunks": 0, "documents": []}
     import json
-    chunks = json.loads(CHUNKS_FILE.read_text())
+    try:
+        chunks = json.loads(CHUNKS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {"indexed_chunks": 0, "documents": []}
     doc_map: dict[int, str] = {}
     for c in chunks:
         doc_map[c["doc_id"]] = c["title"]

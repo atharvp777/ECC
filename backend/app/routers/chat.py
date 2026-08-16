@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from app.services.knowledge_service import answer_from_docs
+from app.services.ai_service import chat_with_ai
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 
@@ -21,15 +21,14 @@ class ChatRequest(BaseModel):
 # -------------------------------------------------
 @router.post("/", response_model=dict)
 async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
-    """
-    Receive the full conversation history, ask Groq (via
-    knowledge_service.answer_from_docs) and return the answer.
-    """
-    # Use the latest user message as the query
-    query = payload.messages[-1].content
+    messages = [
+        {"role": m.role, "content": m.content}
+        for m in payload.messages
+    ]
 
-    # answer_from_docs now always returns {"answer": "...", "sources": [...]}
-    result = answer_from_docs(query)
+    reply = chat_with_ai(messages, db)
 
-    # Safely return the expected format; fallback to empty strings if missing
-    return {"reply": result.get("answer", ""), "sources": result.get("sources", [])}
+    return {
+        "reply": reply,
+        "sources": []
+    }

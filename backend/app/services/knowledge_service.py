@@ -16,7 +16,7 @@ from typing import Optional
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models.project import Project
-from app.models.task import Task, TaskStatus, TaskPriority
+from app.models.task import Task, TaskStatus
 from app.models.note import Note
 from app.models.document import Document
 
@@ -29,6 +29,18 @@ CHUNK_SIZE    = 400
 CHUNK_OVERLAP = 50
 TOP_K         = 5
 
+# Common English stop words – used to focus keyword matching on meaningful terms
+_STOP_WORDS = {
+    "the","is","can","you","my","what","for","about","of","in","on","at","by","and",
+    "or","to","we","our","have","has","had","do","does","did","will","would","should",
+    "could","may","might","must","i","me","myself","we","our","ours","ourselves",
+    "you","your","yours","yourself","yourselves","he","him","his","himself",
+    "she","her","hers","herself","it","its","itself","they","them","their","theirs",
+    "themselves","this","that","these","those","am","are","was","were","be","been",
+    "being","a","an","as","if","then","once","here","there","when","where","why",
+    "how","all","any","both","each","few","more","most","other","some","such",
+    "no","nor","not","only","own","same","so","than","too","very","just","now"
+}
 
 # ── Text extraction ───────────────────────────────────────────────────────────
 def extract_text_from_file(file_path: str, mime_type: str) -> str:
@@ -180,7 +192,7 @@ def answer_from_docs(question: str) -> dict:
       * If no chunks are found, an empty‑context prompt is used – the model is
         instructed not to fabricate information.
       * If a project is identified from the question, its related information
-        (description, tags, tasks, notes, documents) is added to the context.
+        (description, tasks, notes, documents) is added to the context.
       * Calls Groq, handling any unexpected errors gracefully.
       * Always returns the same structure expected by the frontend.
     """
@@ -209,40 +221,43 @@ def answer_from_docs(question: str) -> dict:
         sources = []
 
     # -----------------------------------------------------------------------
-    # 3️⃣  Add project context if a matching project is found
+    # 3️⃣  Identify a project that the question likely refers to
     # -----------------------------------------------------------------------
     db = SessionLocal()
     try:
-        # Simple keyword overlap to locate a project
-        q_tokens = set(re.findall(r'\b\w+\b', question.lower()))
+        # Tokenise the question and drop stop‑words
+        q_tokens = {t for t in re.findall(r'\b\w+\b', question.lower()) if t not in _STOP_WORDS}
+
         best_proj = None
         best_score = 0
 
         for proj in db.query(Project).all():
-            # Match against project name and description
+            # Tokenise project name and description
             name_tokens = set(re.findall(r'\b\w+\b', proj.name.lower()))
             desc_tokens = set(re.findall(r'\b\w+\b', (proj.description or "").lower()))
-            score = len(q_tokens & name_tokens | q_tokens & desc_tokens)
+
+            # Score = 2 × matches in name + matches in description
+            score = len(q_tokens & name_tokens) * 2 + len(q_tokens & desc_tokens)
+
             if score > best_score:
                 best_score = score
                 best_proj = proj
 
         if best_proj:
-            # Build a concise project description
+            # ---- Build project‑specific context ----
             proj_ctx = f"Project: {best_proj.name}"
-            if proj.description:
-                proj_ctx += f" – Description: {proj.description}"
-            if proj.tags:
-                proj_ctx += f" – Tags: {', '.join(proj.tags)}"
+            if best_proj.description:
+                proj_ctx += f" – Description: {best_proj.description}"
+            # (Project has no `tags` field – skip it)
 
-            # Retrieve up to 3 related tasks (excluding DONE)
+            # ---- Retrieve related tasks (exclude DONE) ----
             tasks = (
                 db.query(Task)
                 .filter(
                     Task.project_id == best_proj.id,
                     Task.status != TaskStatus.DONE,
                 )
-                .order_by(TaskPriority.ASC)
+                .order_by(Task.priority.asc(), Task.deadline.asc())
                 .limit(3)
                 .all()
             )
@@ -251,21 +266,21 @@ def answer_from_docs(question: str) -> dict:
                     f"- {t.title or 'Untitled'}" for t in tasks
                 )
 
-            # Retrieve up to 3 notes
+            # ---- Retrieve up to 3 notes ----
             notes = db.query(Note).filter(Note.project_id == best_proj.id).limit(3).all()
             if notes:
                 proj_ctx += "\n\nRelated Notes:\n" + "\n".join(
                     f"- {n.title or 'Untitled'}" for n in notes
                 )
 
-            # Retrieve up to 3 documents linked to the project
+            # ---- Retrieve up to 3 documents ----
             docs = db.query(Document).filter(Document.project_id == best_proj.id).limit(3).all()
             if docs:
                 proj_ctx += "\n\nRelated Documents:\n" + "\n".join(
                     f"- {d.title or 'Untitled'}" for d in docs
                 )
 
-            # Prepend project context to the existing document context
+            # ---- Prepend project context to any existing document context ----
             if context:
                 context = proj_ctx + "\n\n" + context
             else:
