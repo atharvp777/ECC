@@ -1,4 +1,4 @@
-import { api } from './client';
+import api from "./client";
 
 export const chat = (messages) => 
-  api.post('/api/chat/', messages);
+  api.post("/api/chat/", { messages });

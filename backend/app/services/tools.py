@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from datetime import datetime
 from app.models import Project, Task
+from app.models.project import ProjectCategory
 from app.services.google_calendar import (
     get_upcoming_events as gc_get_upcoming_events,
     create_calendar_event as gc_create_calendar_event,
@@ -18,7 +19,7 @@ class ListProjectsRequest(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: str
-    category: str = "Personal"
+    category: str | None = None
 
 
 class UpdateProjectRequest(BaseModel):
@@ -69,13 +70,34 @@ class DeleteCalendarEventRequest(BaseModel):
 
 
 # ---------- Wrapper implementations ----------
+def _normalize_project_category(category: str | ProjectCategory | None) -> str:
+    if category is None:
+        return ProjectCategory.PERSONAL.value
+    if isinstance(category, ProjectCategory):
+        return category.value
+
+    normalized = str(category).strip().lower()
+    for member in ProjectCategory:
+        if normalized in {member.name.lower(), member.value.lower()}:
+            return member.value
+
+    raise ValueError(
+        "Invalid project category. Use one of: baja, agrovault, college, personal, internship."
+    )
+
+
+def _project_exists(db: Session, project_id: int) -> bool:
+    return db.query(Project.id).filter(Project.id == project_id).first() is not None
+
+
 def list_projects(db: Session, req: ListProjectsRequest) -> Dict[str, Any]:
     projects = db.query(Project).filter(Project.status == "ACTIVE").all()
     return {"data": projects}
 
 
 def create_project(db: Session, req: CreateProjectRequest) -> Dict[str, Any]:
-    proj = Project(name=req.name, category=req.category, status="ACTIVE")
+    category = _normalize_project_category(req.category)
+    proj = Project(name=req.name, category=category, status="ACTIVE")
     db.add(proj)
     db.commit()
     db.refresh(proj)
@@ -89,7 +111,7 @@ def update_project(db: Session, req: UpdateProjectRequest) -> Dict[str, Any]:
     if req.name:
         proj.name = req.name
     if req.category:
-        proj.category = req.category
+        proj.category = _normalize_project_category(req.category)
     db.commit()
     db.refresh(proj)
     return {"data": proj}
@@ -107,6 +129,9 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
         deadline = datetime.fromisoformat(
             req.deadline.replace("Z", "+00:00")
         )
+
+    if req.project_id is not None and not _project_exists(db, req.project_id):
+        return {"data": {"error": f"Project not found: {req.project_id}"}}
 
     task = Task(
         title=req.title,
@@ -131,6 +156,10 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
             if value.endswith("Z"):
                 value = value[:-1] + "+00:00"
             task.deadline = datetime.fromisoformat(value)
+        elif field == "project_id" and value is not None:
+            if not _project_exists(db, value):
+                return {"data": {"error": f"Project not found: {value}"}}
+            setattr(task, field, value)
         else:
             setattr(task, field, value)
     db.commit()

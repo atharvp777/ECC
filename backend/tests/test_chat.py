@@ -3,15 +3,21 @@ from unittest.mock import patch, MagicMock
 from datetime import datetime
 import json
 
+from fastapi.testclient import TestClient
+
 from app.services.ai_service import chat_with_ai, plan_tool_call
+from app.main import app
 from app.core.config import settings
+from app.core.database import get_db
 from app.services.tool_dispatcher import execute_tool
 from app.core.database import SessionLocal, Base
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 # Import the Task model so we can create real SQLAlchemy objects for mocking
 from app.models import Task
+from app.models.project import Project, ProjectCategory
 
 
 # ----------------------------------------------------------------------
@@ -67,7 +73,7 @@ def test_plan_tool_call_detects_create_task():
     with patch("app.services.ai_service.Groq") as mock_groq_class:
         mock_client = MagicMock()
         mock_response = _mock_groq_response(
-            '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
+            '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_name":"BAJA HV"}}'
         )
         mock_client.chat.completions.create.return_value = mock_response
         mock_groq_class.return_value = mock_client
@@ -79,7 +85,7 @@ def test_plan_tool_call_detects_create_task():
         assert args["title"] == "wiring diagram"
         # deadline is an ISO string; the test does not enforce exact format
         assert "2026-08-15T18:00:00" in args["deadline"]
-        assert args["project_id"] == 1
+        assert args["project_name"] == "BAJA HV"
 
 
 def test_plan_tool_call_live_groq_smoke():
@@ -93,7 +99,7 @@ def test_plan_tool_call_live_groq_smoke():
         # Setup a mock response that mimics a real Groq completion
         mock_choices = [MagicMock()]
         mock_message = MagicMock()
-        mock_message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
+        mock_message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_name":"BAJA HV"}}'
         mock_choices[0].message = mock_message
         mock_client.chat.completions.create.return_value = MagicMock()
         mock_client.chat.completions.create.return_value.choices = mock_choices
@@ -143,7 +149,7 @@ def test_chat_explicit_create_task_path(db_session):
                 "title": "TestTask",
                 "priority": "MEDIUM",
                 "deadline": "2025-01-01T00:00:00",
-                "project_id": proj.id,
+                "project_name": "TestProj",
             },
         })
         # Create a mock completion that returns the planner JSON
@@ -164,7 +170,7 @@ def test_chat_explicit_create_task_path(db_session):
         assert planned is not None
         assert planned["tool"] == "create_task"
         assert planned["args"]["title"] == "TestTask"
-        assert planned["args"]["project_id"] == proj.id
+        assert planned["args"]["project_name"] == "TestProj"
 
         # Create a Task object to be returned by execute_tool
         task = Task(
@@ -190,7 +196,7 @@ def test_chat_explicit_create_task_path(db_session):
             mock_execute.assert_called_once()
             called_args = mock_execute.call_args.args[1]  # args dict
             assert called_args["title"] == "TestTask"
-            assert called_args["project_id"] == proj.id
+            assert called_args["project_name"] == "TestProj"
 
 
 def test_chat_tool_execution_result_is_user_facing(db_session):
@@ -220,3 +226,146 @@ def test_chat_tool_execution_result_is_user_facing(db_session):
             reply = chat_with_ai(messages, db_session)
             assert "completed" in reply.lower()
             mock_execute.assert_called_once()
+
+
+@pytest.fixture
+def chat_api_client():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    db = Session()
+
+    # Seed a non-target project first so IDs are not all 1.
+    db.add(Project(name="Placeholder", category="personal", status="ACTIVE"))
+    db.add(Project(name="BAJA HV", category="baja", status="ACTIVE"))
+    db.add(Project(name="dMAT", category="personal", status="ACTIVE"))
+    db.add(Project(name="Demo 1", category="personal", status="ACTIVE"))
+    db.commit()
+
+    def override_get_db():
+        try:
+            yield db
+        finally:
+            pass
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        yield client, db
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "project_name,title",
+    [
+        ("dMAT", "Test dMAT assignment"),
+        ("BAJA HV", "Test BAJA assignment"),
+        ("Demo 1", "Test Demo assignment"),
+    ],
+)
+def test_chat_route_creates_task_for_named_project(chat_api_client, project_name, title):
+    client, db = chat_api_client
+    project = db.query(Project).filter(Project.name == project_name).first()
+    assert project is not None
+    assert project.id != 1
+
+    planner_json = json.dumps(
+        {
+            "tool": "create_task",
+            "args": {
+                "title": title,
+                "priority": "MEDIUM",
+                "deadline": None,
+                "project_name": project_name,
+            },
+        }
+    )
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(planner_json)
+        mock_groq.return_value = mock_client
+
+        response = client.post(
+            "/api/chat/",
+            json={"messages": [{"role": "user", "content": f"Add a task called {title} to {project_name}"}]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Created task" in payload["reply"]
+
+    task = db.query(Task).filter(Task.title == title).first()
+    assert task is not None
+    assert task.project_id == project.id
+    assert task.project_id != 1
+
+
+def test_chat_route_rejects_unknown_project_name(chat_api_client):
+    client, db = chat_api_client
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps(
+                {
+                    "tool": "create_task",
+                    "args": {
+                        "title": "Should fail",
+                        "priority": "MEDIUM",
+                        "deadline": None,
+                        "project_name": "DoesNotExist",
+                    },
+                }
+            )
+        )
+        mock_groq.return_value = mock_client
+
+        response = client.post(
+            "/api/chat/",
+            json={"messages": [{"role": "user", "content": "Add a task called Should fail to DoesNotExist"}]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Project not found" in payload["reply"]
+    assert db.query(Task).filter(Task.title == "Should fail").first() is None
+
+
+def test_chat_route_creates_project_with_default_category(chat_api_client):
+    client, db = chat_api_client
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps(
+                {
+                    "tool": "create_project",
+                    "args": {
+                        "name": "Robotics",
+                        "category": None,
+                    },
+                }
+            )
+        )
+        mock_groq.return_value = mock_client
+
+        response = client.post(
+            "/api/chat/",
+            json={"messages": [{"role": "user", "content": "Create a project called Robotics"}]},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "Created project" in payload["reply"]
+
+    project = db.query(Project).filter(Project.name == "Robotics").first()
+    assert project is not None
+    assert project.category == ProjectCategory.PERSONAL

@@ -47,7 +47,7 @@ def test_plan_tool_call_detects_create_task():
     with patch("app.services.ai_service.Groq") as mock_groq_class:
         mock_client = MagicMock()
         mock_response = _mock_groq_response(
-            '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
+            '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_name":"BAJA HV"}}'
         )
         mock_client.chat.completions.create.return_value = mock_response
         mock_groq_class.return_value = mock_client
@@ -60,7 +60,7 @@ def test_plan_tool_call_detects_create_task():
         assert args["priority"] == "MEDIUM"
         # deadline is an ISO string; the test does not enforce exact format
         assert "2026-08-15T18:00:00" in args["deadline"]
-        assert args["project_id"] == 1
+        assert args["project_name"] == "BAJA HV"
 
 
 def test_plan_tool_call_live_groq_smoke():
@@ -74,7 +74,7 @@ def test_plan_tool_call_live_groq_smoke():
         # Configure the mocked response to return valid JSON for create_task
         mock_client.chat.completions.create.return_value.choices = [MagicMock()]
         mock_client.chat.completions.create.return_value.choices[0].message = MagicMock()
-        mock_client.chat.completions.create.return_value.choices[0].message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_id":1}}'
+        mock_client.chat.completions.create.return_value.choices[0].message.content = '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":"2026-08-15T18:00:00","project_name":"BAJA HV"}}'
         mock_groq_class.return_value = mock_client
 
         result = plan_tool_call(user_msg, context)
@@ -92,7 +92,7 @@ def test_plan_tool_call_natural_language_create_task():
     with patch("app.services.ai_service.Groq") as mock_groq_class:
         mock_client = MagicMock()
         mock_response = _mock_groq_response(
-            '{"tool":"create_task","args":{"title":"TEST_TASK","priority":"MEDIUM","deadline":null,"project_id":null}}'
+            '{"tool":"create_task","args":{"title":"TEST_TASK","priority":"MEDIUM","deadline":null,"project_name":null}}'
         )
         mock_client.chat.completions.create.return_value = mock_response
         mock_groq_class.return_value = mock_client
@@ -104,7 +104,42 @@ def test_plan_tool_call_natural_language_create_task():
         assert args["title"] == "TEST_TASK"
         assert args["priority"] == "MEDIUM"
         assert args["deadline"] is None
-        assert args["project_id"] is None
+        assert args["project_name"] is None
+
+
+def test_plan_tool_call_prompt_prefers_project_name():
+    user_msg = "Add task wiring diagram to BAJA HV"
+    context = "LIVE CONTEXT\n---\nID: 1 | Name: **BAJA HV** | Category: BAJA\n---\nEND CONTEXT"
+    with patch("app.services.ai_service.Groq") as mock_groq_class:
+        mock_client = MagicMock()
+        mock_response = _mock_groq_response(
+            '{"tool":"create_task","args":{"title":"wiring diagram","priority":"MEDIUM","deadline":null,"project_name":"BAJA HV"}}'
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_groq_class.return_value = mock_client
+
+        result = plan_tool_call(user_msg, context)
+        assert result is not None
+        prompt = mock_client.chat.completions.create.call_args.kwargs["messages"][0]["content"]
+        assert "project_name" in prompt
+        assert '"project_id":1' not in prompt
+
+
+def test_plan_tool_call_create_project_uses_valid_category():
+    user_msg = "Create a project called Robotics"
+    context = "LIVE CONTEXT\n---\nNo projects listed yet\n---\nEND CONTEXT"
+    with patch("app.services.ai_service.Groq") as mock_groq_class:
+        mock_client = MagicMock()
+        mock_response = _mock_groq_response(
+            '{"tool":"create_project","args":{"name":"Robotics","category":"personal"}}'
+        )
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_groq_class.return_value = mock_client
+
+        result = plan_tool_call(user_msg, context)
+        assert result is not None
+        assert result["tool"] == "create_project"
+        assert result["args"]["category"] == "personal"
 
 
 def test_create_task_handles_deadline_none():

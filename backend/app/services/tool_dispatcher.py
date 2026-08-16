@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
 from typing import Dict, Any
+from sqlalchemy import func
+from app.models.project import Project
 from app.services.tools import (
     list_projects as lp,
     create_project as cp,
@@ -37,12 +39,44 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
     Tool wrapper functions expect their arguments inside a Pydantic
     request object, so build the appropriate request model here.
     """
-    func = TOOL_FUNCTIONS.get(tool_name)
+    tool_func = TOOL_FUNCTIONS.get(tool_name)
 
-    if not func:
+    if not tool_func:
         return {"data": {"error": f"Unknown tool: {tool_name}"}}
 
     try:
+        args = dict(args or {})
+
+        if tool_name == "create_task":
+            project_name = args.pop("project_name", None)
+            if project_name is not None:
+                if not isinstance(project_name, str) or not project_name.strip():
+                    return {"data": {"error": "project_name must be a non-empty string"}}
+
+                trimmed = project_name.strip()
+                normalized = trimmed.lower()
+                project = (
+                    db.query(Project)
+                    .filter(func.trim(Project.name) == trimmed)
+                    .first()
+                )
+
+                if project is None:
+                    matches = (
+                        db.query(Project)
+                        .filter(func.lower(func.trim(Project.name)) == normalized)
+                        .all()
+                    )
+                    if len(matches) == 1:
+                        project = matches[0]
+                    elif len(matches) > 1:
+                        return {"data": {"error": f'Ambiguous project name: "{project_name}"'}}
+
+                if not project:
+                    return {"data": {"error": f'Project not found: "{project_name}"'}}
+
+                args["project_id"] = project.id
+
         from app.services.tools import (
             ListProjectsRequest,
             CreateProjectRequest,
@@ -78,7 +112,7 @@ def execute_tool(tool_name: str, args: dict, db: Session) -> Dict[str, Any]:
 
         request = request_model(**args)
 
-        return func(db, request)
+        return tool_func(db, request)
 
     except Exception as exc:
         return {"data": {"error": str(exc)}}

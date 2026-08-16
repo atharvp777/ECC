@@ -41,7 +41,19 @@ export default function Chat() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),
       });
-      const data = await response.json();
+      const contentType = response.headers.get("content-type") || "";
+      const data = contentType.includes("application/json")
+        ? await response.json()
+        : { reply: await response.text() };
+
+      if (!response.ok) {
+        const errorMessage = data.detail || data.reply || data.error || `Request failed (${response.status})`;
+        setMessages((prev) => [...prev, { role: "assistant", content: errorMessage }]);
+        setLoading(false);
+        scrollToBottom();
+        return;
+      }
+
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       setLoading(false);
       scrollToBottom();
