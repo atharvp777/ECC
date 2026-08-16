@@ -96,8 +96,16 @@ function GoogleCalendarSection({ connected, canWrite, onRefresh }) {
       )}
 
       {connected && !canWrite && (
-        <div style={{ background: "rgba(245,158,11,.12)", borderRadius: 10, padding: "10px 14px", fontSize: 12, marginBottom: 16, color: "var(--text)" }}>
-          ⚠ Read-only access — reconnect to enable event creation.
+        <div style={{
+          background: "rgba(245,158,11,.12)", borderRadius: 10, padding: "10px 14px",
+          fontSize: 12, marginBottom: 16, color: "var(--text)",
+          display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+        }}>
+          <span>⚠ Read-only access — reconnect to enable event creation.</span>
+          <a href={`${BASE}/integrations/google/auth`} target="_blank" rel="noreferrer"
+            className="btn btn-primary btn-sm">
+            Reconnect Google Calendar
+          </a>
         </div>
       )}
 
@@ -230,6 +238,14 @@ export default function Integrations() {
   };
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    // Refresh status when the window regains focus, e.g. after the Google
+    // OAuth consent flow completes in a new tab and redirects back to this page.
+    const onFocus = () => load();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   return (
     <div className="page" style={{ maxWidth: 720 }}>
