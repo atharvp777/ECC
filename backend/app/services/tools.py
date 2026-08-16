@@ -16,6 +16,7 @@ from app.services.task_calendar_sync import (
     create_or_update_event as tcs_create_or_update_event,
     unlink_event as tcs_unlink_event,
     delete_event_best_effort as tcs_delete_event_best_effort,
+    TASK_NOT_LINKED_MESSAGE,
 )
 
 
@@ -760,5 +761,13 @@ def remove_task_from_calendar(db: Session, req: RemoveTaskFromCalendarRequest) -
     task = db.query(Task).filter(Task.id == req.task_id).first()
     if not task:
         return {"data": {"error": f"Task not found: {req.task_id}"}}
+    if not task.google_calendar_event_id:
+        # Nothing linked: never a fake success and never a Google write.
+        return {
+            "data": {
+                "error": TASK_NOT_LINKED_MESSAGE,
+                "reply_direct": True,
+            }
+        }
     tcs_unlink_event(db, task)
     return {"data": task}

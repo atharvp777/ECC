@@ -20,6 +20,11 @@ from sqlalchemy.orm import Session
 from app.services import google_calendar
 
 
+TASK_NOT_LINKED_MESSAGE = (
+    "That task isn't currently linked to a Google Calendar event."
+)
+
+
 def _parse_datetime_iso(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None

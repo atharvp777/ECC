@@ -16,8 +16,10 @@ from app.services.tools import (
     delete_calendar_event as dce,
     add_task_to_calendar as atc,
     remove_task_from_calendar as rtc,
+    SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
+import re
 
 TOOL_FUNCTIONS: Dict[str, Any] = {
     "list_projects": lp,
@@ -34,6 +36,15 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "add_task_to_calendar": atc,
     "remove_task_from_calendar": rtc,
 }
+
+
+def _is_google_event_id_like(value: str) -> bool:
+    """True when a value has the alphanumeric-slug shape of a Google event id.
+
+    Google Calendar event ids never contain spaces. A task title (e.g.
+    "QA scheduled task") is never a valid event id.
+    """
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", value))
 
 
 def execute_tool(
@@ -60,6 +71,49 @@ def execute_tool(
 
     try:
         args = dict(args or {})
+
+        # ---- Task-calendar write defense (server-side) ---------------------
+        # A raw calendar write must never be aimed at a task's linked event
+        # with a fabricated event_id (e.g. a task title). When the event_id
+        # matches a linked task, re-route through the task-calendar tools so
+        # the task row stays in sync with Google. Values that cannot be a
+        # Google event id are rejected before any Google call.
+        if tool_name in ("update_calendar_event", "delete_calendar_event"):
+            event_id = args.get("event_id")
+            if not event_id or not isinstance(event_id, str) or not event_id.strip():
+                return {"data": {"error": f"{tool_name} requires an event_id"}}
+
+            from app.models.task import Task
+            linked_task = (
+                db.query(Task)
+                .filter(Task.google_calendar_event_id == event_id)
+                .first()
+            )
+            if linked_task is not None:
+                if tool_name == "update_calendar_event":
+                    tool_name = "add_task_to_calendar"
+                    args = {
+                        "task_id": linked_task.id,
+                        "when": args.get("when"),
+                        "start_time": args.get("start_time"),
+                        "duration_minutes": args.get("duration_minutes", 60),
+                        "timezone": args.get("timezone", SYSTEM_TIMEZONE),
+                    }
+                else:
+                    tool_name = "remove_task_from_calendar"
+                    args = {"task_id": linked_task.id}
+            elif not _is_google_event_id_like(event_id):
+                return {
+                    "data": {
+                        "error": (
+                            f"'{event_id}' is not a known Google Calendar event id. "
+                            "A task's calendar event is managed with the task tools."
+                        )
+                    }
+                }
+            # The re-route above changed tool_name; rebind the tool function so
+            # the task-calendar tool actually runs.
+            tool_func = TOOL_FUNCTIONS.get(tool_name)
 
         if tool_name == "create_task":
             project_name = args.pop("project_name", None)

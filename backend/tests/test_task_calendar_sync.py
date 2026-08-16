@@ -106,6 +106,18 @@ def _linked_task(db_session, title="Wiring"):
     return task
 
 
+def _qa_scheduled_task(db_session, linked=True):
+    task = Task(
+        title="QA scheduled task",
+        priority="MEDIUM",
+        google_calendar_event_id="evt_qa_scheduled" if linked else None,
+    )
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+    return task
+
+
 # ----------------------------------------------------------------------
 # A. Schedule creates task + event (mocked Google)
 # ----------------------------------------------------------------------
@@ -1034,3 +1046,334 @@ def test_no_silent_selection_based_on_calendar_state(db_session):
     mock_create.assert_not_called()
     assert t1.google_calendar_event_id is None
     assert t2.google_calendar_event_id == "evt_work"
+
+
+# ----------------------------------------------------------------------
+# P. Problem 1/3: the planner must never fabricate a calendar event_id from
+#    a task title. Move/reschedule requests route through the task-calendar
+#    tools, and the server resolves the task + its linked event.
+# ----------------------------------------------------------------------
+def test_chat_normalizes_planner_fabricated_update_to_task_tool(db_session):
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {
+        "tool": "update_calendar_event",
+        "args": {
+            "event_id": "QA scheduled task",
+            "when": "tomorrow",
+            "start_time": "18:00",
+            "timezone": "Asia/Kolkata",
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_qa_scheduled"}) as mock_update, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 6 PM for one hour."}],
+                db_session,
+            )
+
+    mock_create.assert_not_called()
+    mock_update.assert_called_once()
+    assert mock_update.call_args.args[0] == "evt_qa_scheduled"
+    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+
+
+def test_chat_move_linked_task_updates_existing_event(db_session):
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {
+            "task_title": "QA scheduled task",
+            "when": "tomorrow",
+            "start_time": "18:00",
+            "duration_minutes": 60,
+            "timezone": "Asia/Kolkata",
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_qa_scheduled"}) as mock_update, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 6 PM for one hour."}],
+                db_session,
+            )
+
+    mock_create.assert_not_called()
+    mock_update.assert_called_once()
+    assert mock_update.call_args.args[0] == "evt_qa_scheduled"
+    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+
+
+def test_chat_move_unlinked_task_creates_event_once(db_session):
+    task = _qa_scheduled_task(db_session, linked=False)
+    planner_payload = {
+        "tool": "update_calendar_event",
+        "args": {
+            "event_id": "QA scheduled task",
+            "when": "tomorrow",
+            "start_time": "18:00",
+            "timezone": "Asia/Kolkata",
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_moved"}) as mock_create, \
+             patch.object(google_calendar, "update_calendar_event") as mock_update:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 6 PM for one hour."}],
+                db_session,
+            )
+
+    mock_create.assert_called_once()
+    mock_update.assert_not_called()
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == "evt_moved"
+    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+
+
+def test_dispatcher_rejects_fabricated_event_id_no_google_call(db_session):
+    _qa_scheduled_task(db_session)
+    with patch.object(google_calendar, "update_calendar_event") as mock_update:
+        result = execute_tool(
+            "update_calendar_event",
+            {"event_id": "QA scheduled task", "when": "tomorrow", "start_time": "18:00"},
+            db_session,
+        )
+
+    assert "error" in result["data"]
+    assert "not a known Google Calendar event id" in result["data"]["error"]
+    mock_update.assert_not_called()
+
+
+def test_dispatcher_reroutes_verified_linked_event_id(db_session):
+    task = _qa_scheduled_task(db_session)
+    with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_qa_scheduled"}) as mock_update:
+        result = execute_tool(
+            "update_calendar_event",
+            {"event_id": "evt_qa_scheduled", "when": "tomorrow", "start_time": "18:00", "timezone": "Asia/Kolkata"},
+            db_session,
+        )
+
+    assert result["data"].id == task.id
+    mock_update.assert_called_once()
+    assert mock_update.call_args.args[0] == "evt_qa_scheduled"
+
+
+# ----------------------------------------------------------------------
+# Q. Problem 2: remove routes to remove_task_from_calendar. The server
+#    resolves the task, deletes its linked event, keeps the task row and
+#    clears the link. Unlinked tasks never cause a Google write.
+# ----------------------------------------------------------------------
+def test_chat_remove_task_deletes_event_keeps_task(db_session):
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {"tool": "remove_task_from_calendar", "args": {"task_title": "QA scheduled task"}}
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "delete_calendar_event") as mock_delete, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create, \
+             patch.object(google_calendar, "update_calendar_event") as mock_update:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Remove QA scheduled task from my calendar."}],
+                db_session,
+            )
+
+    mock_delete.assert_called_once()
+    assert mock_delete.call_args.args[0] == "evt_qa_scheduled"
+    mock_create.assert_not_called()
+    mock_update.assert_not_called()
+    db_session.refresh(task)
+    assert task.google_calendar_event_id is None
+    assert task.calendar_sync_error is None
+    assert 'Removed "QA scheduled task" from your Google Calendar.' in reply
+
+
+def test_chat_remove_planner_misroutes_delete_event(db_session):
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {"tool": "delete_calendar_event", "args": {"event_id": "QA scheduled task"}}
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Remove QA scheduled task from my calendar."}],
+                db_session,
+            )
+
+    mock_delete.assert_called_once()
+    assert mock_delete.call_args.args[0] == "evt_qa_scheduled"
+    db_session.refresh(task)
+    assert task.google_calendar_event_id is None
+    assert 'Removed "QA scheduled task" from your Google Calendar.' in reply
+
+
+def test_remove_unlinked_task_no_write_not_linked_message(db_session):
+    task = _qa_scheduled_task(db_session, linked=False)
+    planner_payload = {"tool": "remove_task_from_calendar", "args": {"task_title": "QA scheduled task"}}
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Remove QA scheduled task from my calendar."}],
+                db_session,
+            )
+
+    mock_delete.assert_not_called()
+    assert "isn't currently linked to a Google Calendar event" in reply
+
+
+def test_remove_ambiguous_task_stays_ambiguous(db_session):
+    _seed_wiring_tasks(db_session)
+    planner_payload = {"tool": "remove_task_from_calendar", "args": {"task_title": "the BAJA wiring task"}}
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Remove the BAJA wiring task from my calendar."}],
+                db_session,
+            )
+
+    mock_delete.assert_not_called()
+    assert "Which one should I remove from the calendar?" in reply
+
+
+def test_dispatcher_delete_reroutes_linked_event(db_session):
+    task = _qa_scheduled_task(db_session)
+    with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+        result = execute_tool("delete_calendar_event", {"event_id": "evt_qa_scheduled"}, db_session)
+
+    assert result["data"].id == task.id
+    mock_delete.assert_called_once()
+    assert mock_delete.call_args.args[0] == "evt_qa_scheduled"
+    db_session.refresh(task)
+    assert task.google_calendar_event_id is None
+
+
+# ----------------------------------------------------------------------
+# R. Problem 4: op-specific failure messages (never one generic "couldn't add")
+# ----------------------------------------------------------------------
+def test_calendar_operation_failure_messages_are_op_specific():
+    from app.services.ai_service import (
+        _calendar_operation_failure_message,
+        _CALENDAR_NOT_CREATED_MESSAGE,
+        _CALENDAR_NOT_UPDATED_MESSAGE,
+        _CALENDAR_NOT_REMOVED_MESSAGE,
+    )
+    assert _calendar_operation_failure_message("create_calendar_event") == _CALENDAR_NOT_CREATED_MESSAGE
+    assert _calendar_operation_failure_message("update_calendar_event") == _CALENDAR_NOT_UPDATED_MESSAGE
+    assert _calendar_operation_failure_message("delete_calendar_event") == _CALENDAR_NOT_REMOVED_MESSAGE
+
+
+def test_task_calendar_operation_classification():
+    from app.services.ai_service import _task_calendar_operation
+    assert _task_calendar_operation("Put QA no time task on my calendar.") == "add"
+    assert _task_calendar_operation("Move QA scheduled task to tomorrow at 6 PM for one hour.") == "reschedule"
+    assert _task_calendar_operation("Remove QA scheduled task from my calendar.") == "remove"
+    assert _task_calendar_operation("add this to my calendar") is None
+    assert _task_calendar_operation("schedule a meeting tomorrow") is None
+    assert _task_calendar_operation("remind me tomorrow at 9am to call the team") is None
+
+
+def test_chat_update_failure_message_is_update_specific(db_session):
+    planner_payload = {
+        "tool": "update_calendar_event",
+        "args": {"event_id": "some_real_event_id", "when": "tomorrow", "start_time": "15:00"},
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "_require_write_access"), \
+             patch.object(google_calendar, "_get_service", side_effect=RuntimeError("network down")):
+            reply = chat_with_ai(
+                [{"role": "user", "content": "reschedule the meeting on my calendar to tomorrow at 3pm"}],
+                db_session,
+            )
+
+    assert "couldn't update that calendar event" in reply
+    assert "No changes were made" in reply
+    assert "network down" not in reply
+
+
+# ----------------------------------------------------------------------
+# S. Problem 5: a planner failure (e.g. Groq 429) must never produce a fake
+#    success — the reply is the honest op-specific failure message.
+# ----------------------------------------------------------------------
+def test_chat_planner_failure_remove_reports_honest_message(db_session):
+    import httpx
+    from groq import RateLimitError
+
+    _qa_scheduled_task(db_session)
+    request = httpx.Request("POST", "http://example.com")
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RateLimitError(
+            message="too many requests",
+            response=httpx.Response(429, request=request),
+            body=None,
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=True), \
+             patch("app.services.ai_service.get_upcoming_events", return_value=[]), \
+             patch("app.services.google_calendar.has_write_scope", return_value=True), \
+             patch("app.services.ai_service.execute_tool") as mock_execute:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Remove QA scheduled task from my calendar."}],
+                db_session,
+            )
+
+    mock_execute.assert_not_called()
+    assert "couldn't remove that task from Google Calendar" in reply
+    assert "task itself was not deleted" in reply
+
+
+def test_chat_planner_failure_reschedule_reports_honest_message(db_session):
+    import httpx
+    from groq import RateLimitError
+
+    _qa_scheduled_task(db_session)
+    request = httpx.Request("POST", "http://example.com")
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RateLimitError(
+            message="too many requests",
+            response=httpx.Response(429, request=request),
+            body=None,
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=True), \
+             patch("app.services.ai_service.get_upcoming_events", return_value=[]), \
+             patch("app.services.google_calendar.has_write_scope", return_value=True), \
+             patch("app.services.ai_service.execute_tool") as mock_execute:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 6 PM for one hour."}],
+                db_session,
+            )
+
+    mock_execute.assert_not_called()
+    assert "couldn't update that calendar event" in reply
+    assert "No changes were made" in reply

@@ -32,6 +32,14 @@ _CALENDAR_NOT_CREATED_MESSAGE = (
     "I couldn't add that event to Google Calendar. No calendar event was created."
 )
 
+_CALENDAR_NOT_UPDATED_MESSAGE = (
+    "I couldn't update that calendar event. No changes were made."
+)
+
+_CALENDAR_NOT_REMOVED_MESSAGE = (
+    "I couldn't remove that task from Google Calendar. The task itself was not deleted."
+)
+
 _WRITE_ACCESS_ERROR_HINTS = (
     "write access",
     "reconnect",
@@ -92,12 +100,46 @@ def _is_calendar_write_request(text: str) -> bool:
     return False
 
 
-def _calendar_write_failure_message(error_text: str) -> str:
+def _calendar_operation_failure_message(tool_name: str) -> str:
+    """Op-specific honest failure message for a calendar write."""
+    if tool_name == "update_calendar_event":
+        return _CALENDAR_NOT_UPDATED_MESSAGE
+    if tool_name == "delete_calendar_event":
+        return _CALENDAR_NOT_REMOVED_MESSAGE
+    return _CALENDAR_NOT_CREATED_MESSAGE
+
+
+def _calendar_write_failure_message(error_text: str, tool_name: str = "") -> str:
     """Turn a failed calendar write into an honest, user-readable message."""
     lower = error_text.lower()
     if any(hint in lower for hint in _WRITE_ACCESS_ERROR_HINTS):
         return error_text
-    return _CALENDAR_NOT_CREATED_MESSAGE
+    return _calendar_operation_failure_message(tool_name)
+
+
+def _task_calendar_operation(text: str) -> Optional[str]:
+    """Classify a calendar write message as a task-calendar operation.
+
+    Returns "add", "reschedule" or "remove" when the message is about a task's
+    calendar event, or None when it is a plain calendar event request. The
+    planner must never fabricate a calendar event_id for a task — these
+    operations are routed through the task-calendar tools server-side.
+    """
+    lower = text.lower()
+    if "task" not in lower:
+        return None
+
+    if any(v in lower for v in ("remove", "take off", "unlink")):
+        return "remove"
+    if any(v in lower for v in ("delete", "cancel")) and (
+        "calendar" in lower or "from" in lower
+    ):
+        return "remove"
+    if any(v in lower for v in ("move", "reschedule", "change", "shift", "postpone")):
+        return "reschedule"
+    if "calendar" in lower and any(v in lower for v in ("add", "put", "link", "schedule")):
+        return "add"
+    return None
 
 
 def _render_created_event(data) -> str:
@@ -420,15 +462,25 @@ Do NOT compute start/end yourself. The current date is supplied below and the
 'when' phrase is resolved by the server.
 
 10. update_calendar_event
+Use ONLY for a real calendar event (appointment, meeting, reminder) that the
+user named. NEVER use for a TASK — a task's calendar event is managed with
+add_task_to_calendar, which keeps the task row in sync.
 Arguments:
-{{"event_id": "string (must come from the user's request or a recent listing — never invent one)",
+{{"event_id": "string (must be the EXACT event id from the user's request or a
+              recent calendar listing — never invent one, a task title is never
+              an event id)",
   "summary": "string", "description": "string or null",
   "when": "string or null", "start_time": "string or null",
   "duration_minutes": 60, "timezone": "Asia/Kolkata"}}
 
 11. delete_calendar_event
+Use ONLY for a real calendar event (appointment, meeting, reminder) that the
+user named. NEVER use for a TASK — to remove a task from the calendar use
+remove_task_from_calendar.
 Arguments:
-{{"event_id": "string (must come from the user's request — never invent one)"}}
+{{"event_id": "string (must be the EXACT event id from the user's request or a
+              recent calendar listing — never invent one, a task title is never
+              an event id)"}}
 
 12. add_task_to_calendar
 Use when the user asks to put an EXISTING task on the calendar.
@@ -500,13 +552,25 @@ RULES:
   - "put my <task> on my calendar" / "add my <task> to my calendar" →
     add_task_to_calendar. "remove my <task> from my calendar" →
     remove_task_from_calendar.
+  - "move <task> to <time>" / "reschedule <task> to <time>" / "change <task>
+    to <time>" → add_task_to_calendar with when/start_time VERBATIM. NEVER
+    update_calendar_event for a task, and NEVER fabricate an event_id from the
+    task title.
+  - "take <task> off the calendar" / "remove <task> from the calendar" →
+    remove_task_from_calendar.
+  - The raw calendar tools (create_calendar_event, update_calendar_event,
+    delete_calendar_event) are ONLY for real calendar events, appointments and
+    meetings — never for tasks. A task's calendar event is managed with
+    add_task_to_calendar / remove_task_from_calendar.
   - Do NOT convert a calendar request into create_task, UNLESS it is genuinely
     a task being scheduled for work (then schedule_on_calendar=true).
   - A task is appropriate only when the user asks to create/manage a task or todo.
   - "remind me tomorrow to ..." should create a calendar event when the user is
     clearly asking for a scheduled reminder.
   - "what are my calendar events?" remains list_calendar_events.
-- Never invent a calendar event_id. Only pass one the user mentioned.
+- Never invent a calendar event_id. Only pass one the user mentioned or that
+  appeared in a recent listing. A task title is never an event_id — task
+  calendar operations use add_task_to_calendar / remove_task_from_calendar.
 - Return ONLY valid JSON.
 - Do not use markdown.
 - Do not explain your decision.
@@ -609,6 +673,26 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         tool_name = tool_call["tool"]
         args = tool_call["args"]
 
+        # ---- Task-calendar write normalization -----------------------------
+        # The planner must NEVER fabricate a calendar event_id from a task
+        # title (e.g. "QA scheduled task"). When a planned calendar write
+        # clearly targets a TASK, re-route it through the task-calendar tools:
+        # the server resolves the task and its linked event, and the task row
+        # stays in sync with Google Calendar.
+        if planned_tool_call and calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
+            op = _task_calendar_operation(last_user)
+            if op == "remove":
+                tool_name = "remove_task_from_calendar"
+                args = {}
+            elif op in ("add", "reschedule"):
+                tool_name = "add_task_to_calendar"
+                args = {
+                    "when": args.get("when"),
+                    "start_time": args.get("start_time"),
+                    "duration_minutes": args.get("duration_minutes", 60),
+                    "timezone": args.get("timezone", SYSTEM_TIMEZONE),
+                }
+
         if planned_tool_call and tool_name == "create_task":
             if args.get("project_name") is None and args.get("project_id") is not None:
                 return "Tool 'create_task' failed: planner must use project_name, not project_id."
@@ -651,12 +735,12 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
             if isinstance(data, dict) and "error" in data:
                 if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
-                    return _calendar_write_failure_message(data["error"])
+                    return _calendar_write_failure_message(data["error"], tool_name=tool_name)
                 return f"Tool '{tool_name}' failed: {data['error']}"
 
             if data is None:
                 if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
-                    return _CALENDAR_NOT_CREATED_MESSAGE
+                    return _calendar_operation_failure_message(tool_name)
                 return f"Tool '{tool_name}' failed: no result was returned."
 
             # ---- 4️⃣ Render a concise, user‑friendly reply --------------------
@@ -734,7 +818,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         except Exception as exc:
             logger.exception("Tool execution failed for '%s'", tool_name)
             if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
-                return _calendar_write_failure_message(str(exc))
+                return _calendar_write_failure_message(str(exc), tool_name=tool_name)
             return (
                 "Sorry, I couldn't complete that action. The tool ran into an "
                 "unexpected error. Please try again."
@@ -753,6 +837,11 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         if not has_write_scope():
             from app.services.google_calendar import WRITE_SCOPE_ERROR_MESSAGE
             return WRITE_SCOPE_ERROR_MESSAGE
+        op = _task_calendar_operation(last_user)
+        if op == "remove":
+            return _CALENDAR_NOT_REMOVED_MESSAGE
+        if op == "reschedule":
+            return _CALENDAR_NOT_UPDATED_MESSAGE
         return _CALENDAR_NOT_CREATED_MESSAGE
 
     # ---- 5️⃣ No tool request – fall back to LLM ----------------------------
