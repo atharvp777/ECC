@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { formatAssistantContent } from "../utils/chatFormatting";
+import { API_BASE_URL } from "../config";
 
 const CHAT_STORAGE_KEY = "ecc_chat_messages";
 
@@ -38,7 +39,7 @@ const [input, setInput] = useState("");
   const contextInfo = "Live project context loaded";
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/chat/status")
+    fetch(`${API_BASE_URL}/api/chat/status`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && data.display) setModelIndicator(data.display);
@@ -259,7 +260,7 @@ const [input, setInput] = useState("");
     setMessages(newMessages);
     setLoading(true);
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/chat/", {
+      const response = await fetch(`${API_BASE_URL}/api/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages }),
@@ -280,11 +281,17 @@ const [input, setInput] = useState("");
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
       setLoading(false);
       scrollToBottom();
-    } catch (err) {
+} catch (err) {
       console.error(err);
+      const offline = err instanceof TypeError && !window.navigator.onLine;
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Sorry, something went wrong." },
+        {
+          role: "assistant",
+          content: offline
+            ? "You're offline. Reconnect to send messages."
+            : "Couldn't reach the backend. Make sure it's running, then try again.",
+        },
       ]);
       setLoading(false);
     }

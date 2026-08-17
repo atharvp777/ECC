@@ -102,10 +102,11 @@ function TaskForm({ projects, onSave, onClose, defaultProjectId }) {
 }
 
 export default function Tasks() {
-  const [tasks, setTasks]       = useState([]);
+const [tasks, setTasks]       = useState([]);
   const [projects, setProjects] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading]   = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [filter, setFilter]     = useState({ status: "", priority: "" });
 const [searchParams]          = useSearchParams();
   const projectFilter           = searchParams.get("project");
@@ -118,7 +119,10 @@ const [searchParams]          = useSearchParams();
       if (filter.priority) params.priority = filter.priority;
       const [t, p] = await Promise.all([getTasks(params), getProjects()]);
       setTasks(t); setProjects(p);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
     finally { setLoading(false); }
   };
 
@@ -207,6 +211,14 @@ const handleDelete = async (id) => {
           {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
       </div>
+
+{loadError && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)", textAlign: "center" }}>
+          <p style={{ color: "var(--warning)", fontSize: 13 }}>
+            ⚠ Couldn't load tasks. Check the backend connection.
+          </p>
+        </div>
+      )}
 
       {tasks.length === 0
         ? (

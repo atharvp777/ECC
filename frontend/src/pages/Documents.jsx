@@ -138,7 +138,8 @@ export default function Documents() {
   const [projectFilter, setProjectFilter] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [status, setStatus]       = useState(null);
-  const [reingesting, setReingesting] = useState(null);
+const [reingesting, setReingesting] = useState(null);
+  const [loadError, setLoadError]     = useState(false);
   const inputRef = useRef();
 
   const load = async () => {
@@ -146,7 +147,10 @@ export default function Documents() {
       const params = projectFilter ? { project_id: projectFilter } : {};
       const [d, p, s] = await Promise.all([getDocuments(params), getProjects(), indexStatus().catch(() => null)]);
       setDocs(d); setProjects(p); setStatus(s);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   };
 
   useEffect(() => { load(); }, [projectFilter]);
@@ -214,6 +218,14 @@ export default function Documents() {
       }}>
         💡 After uploading, documents are indexed automatically. Then ask questions in <strong style={{ color: "var(--accent)" }}>Search Docs</strong> or in AI Chat using keywords like "rulebook", "requirement", or "specification".
       </div>
+
+      {loadError && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)", textAlign: "center" }}>
+          <p style={{ color: "var(--warning)", fontSize: 13 }}>
+            ⚠ Couldn't load documents. Check the backend connection.
+          </p>
+        </div>
+      )}
 
       {/* Document list */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
