@@ -3,8 +3,15 @@ import { useNavigate } from "react-router-dom";
 import { getProjects, createProject, deleteProject } from "../api";
 import { Plus, Trash2, FolderOpen } from "lucide-react";
 import Modal from "../components/Modal";
+import { CATEGORY_LABELS } from "./ProjectDetail";
 
-const CATEGORIES = ["baja", "agrovault", "college", "personal", "internship"];
+const CATEGORIES = [
+  { value: "personal", label: "Personal" },
+  { value: "baja", label: "Baja" },
+  { value: "jobprep", label: "JobPrep" },
+  { value: "college", label: "College" },
+  { value: "studyabroad", label: "Study Abroad" },
+];
 const COLORS = ["#4f7cff", "#7c3aed", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4"];
 
 function ProjectForm({ onSave, onClose }) {
@@ -31,7 +38,7 @@ function ProjectForm({ onSave, onClose }) {
         <div className="form-group">
           <label className="form-label">Category</label>
           <select className="form-select" value={form.category} onChange={e => set("category", e.target.value)}>
-            {CATEGORIES.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
+            {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
         </div>
         <div className="form-group">
@@ -100,13 +107,13 @@ export default function Projects() {
           <div className="project-grid">
             {projects.map(p => {
               const pct = p.task_count ? Math.round((p.done_tasks || 0) / p.task_count * 100) : 0;
-              return (
-                <div className="project-card" key={p.id} onClick={() => navigate(`/tasks?project=${p.id}`)}>
+return (
+                <div className="project-card" key={p.id} onClick={() => navigate(`/projects/${p.id}`)}>
                   <div className="color-bar" style={{ background: p.color }} />
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                     <div>
                       <h4>{p.name}</h4>
-                      <div className="cat">{p.category} · {p.status}</div>
+                      <div className="cat">{CATEGORY_LABELS[p.category] || p.category} · {p.status}</div>
                     </div>
                     <button className="btn btn-ghost btn-sm" onClick={e => handleDelete(e, p.id)}>
                       <Trash2 size={12} />

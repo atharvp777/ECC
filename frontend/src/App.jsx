@@ -4,10 +4,10 @@ import { getBackendHealth } from "./api/client";
 import Sidebar       from "./components/Sidebar";
 import Dashboard     from "./pages/Dashboard";
 import Projects      from "./pages/Projects";
+import ProjectDetail from "./pages/ProjectDetail";
 import Tasks         from "./pages/Tasks";
 import Notes         from "./pages/Notes";
 import Documents     from "./pages/Documents";
-import Meetings      from "./pages/Meetings";
 import Chat          from "./pages/Chat";
 import Integrations  from "./pages/Integrations";
 import Settings      from "./pages/Settings";
@@ -66,10 +66,10 @@ export default function App() {
         <Routes>
           <Route path="/"             element={<Layout page={<Dashboard />}    title="Dashboard" />} />
           <Route path="/projects"     element={<Layout page={<Projects />}     title="Projects" />} />
+          <Route path="/projects/:id" element={<Layout page={<ProjectDetail />} title="Project" />} />
           <Route path="/tasks"        element={<Layout page={<Tasks />}        title="Tasks" />} />
           <Route path="/notes"        element={<Layout page={<Notes />}        title="Notes" />} />
           <Route path="/documents"    element={<Layout page={<Documents />}    title="Knowledge Base" />} />
-          <Route path="/meetings"     element={<Layout page={<Meetings />}     title="Meetings" />} />
           <Route path="/chat"         element={<Layout page={<Chat />}         title="AI Chat" />} />
           <Route path="/integrations" element={<Layout page={<Integrations />} title="Integrations" />} />
           <Route path="/settings"     element={<Layout page={<Settings />}     title="Settings" />} />

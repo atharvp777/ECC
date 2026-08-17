@@ -98,7 +98,6 @@ def test_planner_prompt_exposes_calendar_tools():
     "user_msg,expected_tool,when",
     [
         ("add a reminder for tomorrow to get white shirt from ayu", "create_calendar_event", "tomorrow"),
-        ("schedule a meeting tomorrow", "create_calendar_event", "tomorrow"),
         ("add this to my calendar", "create_calendar_event", None),
     ],
 )
@@ -140,6 +139,34 @@ def test_planner_routes_task_to_create_task():
         result = plan_tool_call("create a task to finish the wiring diagram", "ctx")
         assert result is not None
         assert result["tool"] == "create_task"
+
+
+def test_planner_routes_meeting_to_create_task():
+    """A meeting request is a TASK (task_type=meeting), not a calendar event."""
+    payload = {
+        "tool": "create_task",
+        "args": {
+            "title": "Meeting with Prof X",
+            "priority": "MEDIUM",
+            "task_type": "meeting",
+            "deadline": None,
+            "project_name": None,
+            "when": "tomorrow",
+            "start_time": "16:00",
+            "duration_minutes": 60,
+            "schedule_on_calendar": True,
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq_class:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(payload))
+        mock_groq_class.return_value = mock_client
+
+        result = plan_tool_call("schedule a meeting with Prof X tomorrow at 4 PM", "ctx")
+        assert result is not None
+        assert result["tool"] == "create_task"
+        assert result["args"]["task_type"] == "meeting"
+        assert result["args"]["schedule_on_calendar"] is True
 
 
 def test_planner_routes_calendar_read_to_list():

@@ -35,6 +35,11 @@ CALENDAR_WRITE_TOOLS = {
 
 TASK_TOOLS = {"create_task", "update_task", "complete_task"}
 
+# Verbs that mark a task-calendar request as a MOVE/RESCHEDULE (used only to
+# pick the response wording: "Moved …" vs "Added …"). The underlying operation
+# is unchanged.
+_RESCHEDULE_VERBS = ("move", "reschedule", "change", "shift", "postpone")
+
 _CALENDAR_NOT_CREATED_MESSAGE = (
     "I couldn't add that event to Google Calendar. No calendar event was created."
 )
@@ -189,8 +194,20 @@ def _render_task_updated(data) -> str:
     return base
 
 
-def _render_task_calendar_linked(data) -> str:
+def _is_reschedule_request(text: str) -> bool:
+    """True when the user asked to MOVE/RESCHEDULE a task's calendar event.
+
+    Response-rendering only: when True, a successful add_task_to_calendar
+    outcome is worded as "Moved …", otherwise "Added …".
+    """
+    lower = text.lower()
+    return any(v in lower for v in _RESCHEDULE_VERBS)
+
+
+def _render_task_calendar_linked(data, moved: bool = False) -> str:
     if data.google_calendar_event_id and not data.calendar_sync_error:
+        if moved:
+            return f'Moved "{data.title}" to your Google Calendar.'
         return f'Added "{data.title}" to your Google Calendar.'
     reason = _safe_sync_reason(data.calendar_sync_error)
     return f'I couldn\'t add "{data.title}" to your Google Calendar: {reason}'
@@ -211,14 +228,14 @@ class AIServiceError(Exception):
 # ----------------------------------------------------------------------
 SYSTEM_PROMPT = """You are the Engineering Command Center AI — a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
-You have real-time access to Atharv's projects, tasks, notes, and meetings. Use this context to give specific, actionable answers — not generic ones.
+You have real-time access to Atharv's projects, tasks, notes, and documents. Use this context to give specific, actionable answers — not generic ones.
 
 Your personality:
 - Direct and efficient. No filler. No "Great question!".
 - Think like a senior engineer: practical, prioritization-aware, aware of deadlines.
 - When you see overdue tasks or critical items, flag them proactively.
 - Use bullet points for lists, plain prose for explanations.
-- You know about: eBAJA, AgroVault, Formula SAE EV rules, mechanical engineering, Python, software development.
+- You know about: eBAJA, Formula SAE EV rules, mechanical engineering, Python, software development.
 
 When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
 
@@ -258,7 +275,6 @@ def _build_context(db: Session) -> str:
     from app.models.project import Project
     from app.models.task import Task
     from app.models.note import Note
-    from app.models.meeting import Meeting
 
     projects = db.query(Project).filter(Project.status == "ACTIVE").all()
     if projects:
@@ -321,14 +337,6 @@ def _build_context(db: Session) -> str:
         lines.append("## Recent Notes")
         for n in notes:
             lines.append(f"- {n.title}")
-        lines.append("")
-
-    recent_meetings = db.query(Meeting).order_by(Meeting.held_at.desc()).limit(3).all()
-    if recent_meetings:
-        lines.append("## Recent Meetings")
-        for m in recent_meetings:
-            pending = sum(1 for a in m.action_items if not a.is_done)
-            lines.append(f"- {m.title} ({m.held_at.strftime('%b %d')}) — {pending} open action items")
         lines.append("")
 
     lines.append("--- END CONTEXT ---\n")
@@ -410,20 +418,23 @@ Arguments: {{}}
 
 2. create_project
 Arguments:
-{{"name": "string", "category": "baja | agrovault | college | personal | internship or null"}}
+{{"name": "string", "category": "personal | baja | jobprep | college | studyabroad or null"}}
 
 3. update_project
 Arguments:
-{{"project_id": integer, "name": "string", "category": "baja | agrovault | college | personal | internship or null"}}
+{{"project_id": integer, "name": "string", "category": "personal | baja | jobprep | college | studyabroad or null"}}
 
 4. list_tasks
 Arguments: {{}}
 
 5. create_task
 Use for a task or todo, including a task the user wants to work on at a
-scheduled time. Arguments:
+scheduled time, and for MEETINGS (a meeting is a task with task_type="meeting").
+Arguments:
 {{"title": "string",
   "priority": "LOW | MEDIUM | HIGH | CRITICAL",
+  "task_type": "work | reminder | meeting (default 'work'; use 'meeting' for
+                meetings, 'reminder' for simple reminders)",
   "deadline_when": "the user's DUE-DATE phrase passed VERBATIM, e.g. 'Friday',
                     'tomorrow', '2026-08-20'. null when there is no due date.",
   "project_name": "string or null",
@@ -433,14 +444,16 @@ scheduled time. Arguments:
                  (e.g. '15:00' for 3pm), else null",
   "duration_minutes": "integer, default 60",
   "schedule_on_calendar": "true ONLY when the user wants this task blocked as
-                            calendar work time (work on X at TIME / from A to B)."}}
+                            calendar work time (work on X at TIME / from A to B),
+                            or when a MEETING has a date/time (meeting at TIME)."}}
 Do NOT compute dates/times yourself.
 
 6. update_task
 Arguments:
 {{"task_id": integer, "title": "string or null",
   "priority": "string or null", "deadline_when": "string or null",
-  "status": "string or null", "when": "string or null",
+  "status": "string or null", "task_type": "work | reminder | meeting or null",
+  "when": "string or null",
   "start_time": "string or null", "duration_minutes": 60,
   "schedule_on_calendar": "true or false"}}
 
@@ -453,7 +466,8 @@ Arguments: {{}}
 
 9. create_calendar_event
 Use ONLY when the user asks to add, schedule, book or get a reminder about a
-real calendar event / appointment on a date.
+real calendar event / appointment on a date. Meetings are NOT events — a
+meeting is a create_task call with task_type="meeting".
 Arguments:
 {{"summary": "string",
   "description": "string or null",
@@ -468,9 +482,9 @@ Do NOT compute start/end yourself. The current date is supplied below and the
 'when' phrase is resolved by the server.
 
 10. update_calendar_event
-Use ONLY for a real calendar event (appointment, meeting, reminder) that the
-user named. NEVER use for a TASK — a task's calendar event is managed with
-add_task_to_calendar, which keeps the task row in sync.
+Use ONLY for a real calendar event (appointment, reminder) that the
+user named. NEVER use for a TASK or a MEETING — a task's calendar event is
+managed with add_task_to_calendar, which keeps the task row in sync.
 Arguments:
 {{"event_id": "string (must be the EXACT event id from the user's request or a
               recent calendar listing — never invent one, a task title is never
@@ -480,9 +494,9 @@ Arguments:
   "duration_minutes": 60, "timezone": "Asia/Kolkata"}}
 
 11. delete_calendar_event
-Use ONLY for a real calendar event (appointment, meeting, reminder) that the
-user named. NEVER use for a TASK — to remove a task from the calendar use
-remove_task_from_calendar.
+Use ONLY for a real calendar event (appointment, reminder) that the
+user named. NEVER use for a TASK or a MEETING — to remove a task from the
+calendar use remove_task_from_calendar.
 Arguments:
 {{"event_id": "string (must be the EXACT event id from the user's request or a
               recent calendar listing — never invent one, a task title is never
@@ -552,9 +566,16 @@ RULES:
       "work on X tomorrow at 4 PM" describe time BLOCKED for work → create_task
       with when/start_time/duration_minutes and schedule_on_calendar=true
       (one operation that creates the task AND its calendar event).
-  - "reminder", "appointment", "event", "meeting", "book" that are NOT a task
-    describe a real scheduled calendar event → use create_calendar_event (or
-    list_calendar_events for "what are my calendar events?").
+  - "reminder", "appointment", "event", "book" that are NOT a task and NOT a
+    meeting describe a real scheduled calendar event → use create_calendar_event
+    (or list_calendar_events for "what are my calendar events?").
+  - "MEETING" requests are TASKS: "meeting with Prof X tomorrow at 4 PM",
+    "schedule a meeting tomorrow", "book a meeting", "set up a meeting",
+    "meeting reminder" → create_task with task_type="meeting". When the user
+    gives a date/time, pass when/start_time VERBATIM and set
+    schedule_on_calendar=true (creates the task AND its Google event). When no
+    date/time is given, create the meeting task with when=null and
+    schedule_on_calendar=false — never invent a schedule.
   - "put my <task> on my calendar" / "add my <task> to my calendar" →
     add_task_to_calendar. "remove my <task> from my calendar" →
     remove_task_from_calendar.
@@ -726,6 +747,10 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         tool_name = tool_call["tool"]
         args = tool_call["args"]
 
+        # Response-wording flag (rendering only): reschedules say "Moved …",
+        # fresh adds say "Added …". The operation itself is unchanged.
+        rescheduled = _is_reschedule_request(last_user)
+
         # ---- Task-calendar write normalization -----------------------------
         # The planner must NEVER fabricate a calendar event_id from a task
         # title (e.g. "QA scheduled task"). When a planned calendar write
@@ -738,6 +763,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 tool_name = "remove_task_from_calendar"
                 args = {}
             elif op in ("add", "reschedule"):
+                rescheduled = rescheduled or op == "reschedule"
                 tool_name = "add_task_to_calendar"
                 args = {
                     "when": args.get("when"),
@@ -770,6 +796,9 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                             tool_name = "remove_task_from_calendar"
                             args = {"task_title": ref}
                         else:
+                            # update_calendar_event aimed at a task is a
+                            # reschedule → word the reply as "Moved".
+                            rescheduled = rescheduled or tool_name == "update_calendar_event"
                             tool_name = "add_task_to_calendar"
                             args = {
                                 "task_title": ref,
@@ -879,7 +908,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 f"Deleted calendar event {data['event_id']}."
             ),
 
-            "add_task_to_calendar": lambda: _render_task_calendar_linked(data),
+            "add_task_to_calendar": lambda: _render_task_calendar_linked(data, moved=rescheduled),
 
             "remove_task_from_calendar": lambda: _render_task_calendar_removed(data),
         }

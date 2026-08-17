@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getTasks, createTask, updateTask, deleteTask, getProjects, getGithubRepos, pushTaskToGithub, linkTaskToCalendar, unlinkTaskFromCalendar } from "../api";
-import { Plus, Trash2, Check, CheckSquare, GitBranch, Calendar, CalendarPlus, CalendarX, RefreshCw } from "lucide-react";
+import { getTasks, createTask, updateTask, deleteTask, getProjects, linkTaskToCalendar, unlinkTaskFromCalendar } from "../api";
+import { Plus, Trash2, Check, CheckSquare, Calendar, CalendarPlus, CalendarX, RefreshCw } from "lucide-react";
 import Modal from "../components/Modal";
 
 const PRIORITIES = ["critical", "high", "medium", "low"];
@@ -107,11 +107,8 @@ export default function Tasks() {
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading]   = useState(true);
   const [filter, setFilter]     = useState({ status: "", priority: "" });
-  const [searchParams]          = useSearchParams();
+const [searchParams]          = useSearchParams();
   const projectFilter           = searchParams.get("project");
-  const [ghModal, setGhModal]   = useState(null);   // task being pushed to GH
-  const [ghRepos, setGhRepos]   = useState([]);
-  const [ghRepo, setGhRepo]     = useState("");
 
   const load = async () => {
     try {
@@ -130,30 +127,6 @@ export default function Tasks() {
   const toggleDone = async (task) => {
     await updateTask(task.id, { status: task.status === "done" ? "todo" : "done" });
     load();
-  };
-
-  const openGhModal = async (task) => {
-    setGhModal(task);
-    try {
-      const r = await getGithubRepos();
-      setGhRepos(r.repos || []);
-      if (r.repos?.length) setGhRepo(r.repos[0].full_name);
-    } catch { setGhRepos([]); }
-  };
-
-  const pushToGithub = async () => {
-    if (!ghRepo || !ghModal) return;
-    try {
-      const issue = await pushTaskToGithub({
-        repo: ghRepo, title: ghModal.title,
-        body: `${ghModal.description || ""}\n\n---\n*Pushed from Engineering Command Center*\nPriority: ${ghModal.priority}`,
-        labels: ["ecc-task", ghModal.priority],
-      });
-      alert(`✓ Created GitHub issue #${issue.number}: ${issue.url}`);
-      setGhModal(null);
-    } catch (e) {
-      alert("Failed: " + (e.response?.data?.detail || e.message));
-    }
   };
 
 const handleDelete = async (id) => {
@@ -278,7 +251,6 @@ const handleDelete = async (id) => {
                       : (
                         <button className="btn btn-ghost btn-sm" title="Add to Google Calendar" onClick={() => openCalModal(task)}><CalendarPlus size={12} /></button>
                       )}
-                    <button className="btn btn-ghost btn-sm" title="Push to GitHub" onClick={() => openGhModal(task)}><GitBranch size={12} /></button>
                     <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(task.id)}><Trash2 size={12} /></button>
                   </div>
                 </div>
@@ -297,33 +269,9 @@ const handleDelete = async (id) => {
             onClose={() => setShowModal(false)}
           />
         </Modal>
-      )}
+)}
 
-      {ghModal && (
-        <Modal title="Push to GitHub" onClose={() => setGhModal(null)}>
-          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 16 }}>
-            Create a GitHub issue from: <strong style={{ color: "var(--text)" }}>{ghModal.title}</strong>
-          </p>
-          {ghRepos.length === 0
-            ? <p style={{ color: "var(--danger)", fontSize: 13 }}>No repos found. Check GITHUB_PAT in your .env</p>
-            : (
-              <div className="form-group">
-                <label className="form-label">Target Repository</label>
-                <select className="form-select" value={ghRepo} onChange={e => setGhRepo(e.target.value)}>
-                  {ghRepos.map(r => <option key={r.full_name} value={r.full_name}>{r.full_name}</option>)}
-                </select>
-              </div>
-            )
-          }
-          <div className="modal-footer">
-            <button className="btn btn-ghost" onClick={() => setGhModal(null)}>Cancel</button>
-            <button className="btn btn-primary" onClick={pushToGithub} disabled={!ghRepo}>
-              <GitBranch size={14} /> Create Issue
-            </button>
-          </div>
-        </Modal>
-      )}
-{calModal && (
+      {calModal && (
         <Modal title="Add to Google Calendar" onClose={() => setCalModal(null)}>
           <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 16 }}>
             Add <strong style={{ color: "var(--text)" }}>{calModal.title}</strong> as calendar work time:

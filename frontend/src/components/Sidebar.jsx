@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard, FolderKanban, CheckSquare,
-  FileText, FileArchive, Users, Settings, Zap, MessageSquare, Plug,
+  Settings, Zap, MessageSquare, Plug,
 } from "lucide-react";
 import { API_BASE_URL } from '../config';
 
@@ -11,11 +11,6 @@ const NAV = [
     { icon: LayoutDashboard, title: "Dashboard",  path: "/" },
     { icon: FolderKanban,   title: "Projects",   path: "/projects" },
     { icon: CheckSquare,    title: "Tasks",      path: "/tasks" },
-  ]},
-  { label: "Knowledge", items: [
-    { icon: FileText,       title: "Notes",      path: "/notes" },
-    { icon: FileArchive,    title: "Documents",  path: "/documents" },
-    { icon: Users,          title: "Meetings",   path: "/meetings" },
   ]},
   { label: "AI", items: [
     { icon: MessageSquare,  title: "AI Chat",    path: "/chat" },

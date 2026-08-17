@@ -15,13 +15,11 @@ def integrations_status():
     """Which integrations are currently connected."""
     from app.services.google_calendar import is_connected as gcal_connected
     from app.services.google_calendar import has_write_scope as gcal_can_write
-    from app.services.github_service  import is_connected as gh_connected
     gcal_ok = gcal_connected()
     return {
         "google_calendar":            gcal_ok,
         "google_calendar_connected":  gcal_ok,
         "google_calendar_can_write":  gcal_ok and gcal_can_write(),
-        "github":                     gh_connected(),
     }
 
 
@@ -75,79 +73,3 @@ def google_disconnect():
     if TOKEN_FILE.exists():
         TOKEN_FILE.unlink()
     return {"status": "disconnected"}
-
-
-# ══════════════════════════════════════════════════════════
-# GITHUB
-# ══════════════════════════════════════════════════════════
-
-@router.get("/github/repos")
-def github_repos(limit: int = Query(30)):
-    from app.services.github_service import get_user_repos, is_connected
-    if not is_connected():
-        return {"connected": False, "repos": []}
-    try:
-        return {"connected": True, "repos": get_user_repos(limit)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/github/issues")
-def github_issues(repo: str = Query(...), limit: int = Query(20)):
-    from app.services.github_service import get_open_issues, is_connected
-    if not is_connected():
-        return {"connected": False, "issues": []}
-    try:
-        return get_open_issues(repo, limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/github/prs")
-def github_prs(repo: str = Query(...), limit: int = Query(20)):
-    from app.services.github_service import get_open_prs, is_connected
-    if not is_connected():
-        return {"connected": False, "prs": []}
-    try:
-        return get_open_prs(repo, limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/github/commits")
-def github_commits(repo: str = Query(...), limit: int = Query(15)):
-    from app.services.github_service import get_recent_commits, is_connected
-    if not is_connected():
-        return {"connected": False, "commits": []}
-    try:
-        return get_recent_commits(repo, limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class PushTaskRequest(BaseModel):
-    repo: str          # e.g. "atharv/ebaja-code"
-    title: str
-    body: str
-    labels: Optional[list[str]] = ["ecc-task"]
-
-
-@router.post("/github/push-task")
-def push_task_to_github(payload: PushTaskRequest):
-    """Create a GitHub issue from a task."""
-    from app.services.github_service import create_issue_from_task, is_connected
-    if not is_connected():
-        raise HTTPException(
-            status_code=400,
-            detail="GitHub is not connected. Add GITHUB_PAT to backend/.env and restart the backend.",
-        )
-    try:
-        issue = create_issue_from_task(
-            repo_full_name=payload.repo,
-            title=payload.title,
-            body=payload.body,
-            labels=payload.labels,
-        )
-        return issue
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 from datetime import datetime
-from app.models.task import TaskPriority, TaskStatus
+from app.models.task import TaskPriority, TaskStatus, TaskType
 
 
 class TaskBase(BaseModel):
@@ -8,6 +8,7 @@ class TaskBase(BaseModel):
     description: str | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
     status: TaskStatus = TaskStatus.TODO
+    task_type: TaskType = TaskType.WORK
     deadline: datetime | None = None
     estimated_minutes: int | None = None
     is_recurring: bool = False
@@ -31,6 +32,7 @@ class TaskUpdate(BaseModel):
     description: str | None = None
     priority: TaskPriority | None = None
     status: TaskStatus | None = None
+    task_type: TaskType | None = None
     deadline: datetime | None = None
     estimated_minutes: int | None = None
     actual_minutes: int | None = None

@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import {
   getIntegrationStatus, getGoogleEvents, disconnectGoogle,
-  getGithubRepos, getGithubIssues, getGithubPRs, getGithubCommits,
 } from "../api";
-import { Calendar, GitBranch, Check, X, ExternalLink, GitPullRequest, AlertCircle, GitCommit, RefreshCw } from "lucide-react";
+import { Calendar, Check, X, ExternalLink, RefreshCw } from "lucide-react";
 
 const BASE = "http://localhost:8000";
 
@@ -141,94 +140,6 @@ function GoogleCalendarSection({ connected, canWrite, onRefresh }) {
   );
 }
 
-// ── GitHub ────────────────────────────────────────────────────────────────
-function GitHubSection({ connected }) {
-  const [repos, setRepos]     = useState([]);
-  const [selected, setSelected] = useState("");
-  const [tab, setTab]         = useState("issues");   // issues | prs | commits
-  const [data, setData]       = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!connected) return;
-    getGithubRepos().then(r => {
-      setRepos(r.repos || []);
-      if (r.repos?.length) setSelected(r.repos[0].full_name);
-    }).catch(() => {});
-  }, [connected]);
-
-  useEffect(() => {
-    if (!selected) return;
-    setLoading(true); setData([]);
-    const loaders = { issues: getGithubIssues, prs: getGithubPRs, commits: getGithubCommits };
-    loaders[tab](selected).then(setData).catch(() => {}).finally(() => setLoading(false));
-  }, [selected, tab]);
-
-  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString() : "";
-
-  return (
-    <SectionCard icon={GitBranch} title="GitHub" color="#e2e8f0">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <StatusBadge ok={connected} />
-        {!connected && (
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>
-            Add <code style={{ background: "var(--surface2)", padding: "0 4px", borderRadius: 3 }}>GITHUB_PAT=ghp_...</code> and <code style={{ background: "var(--surface2)", padding: "0 4px", borderRadius: 3 }}>GITHUB_USERNAME=yourname</code> to your <code style={{ background: "var(--surface2)", padding: "0 4px", borderRadius: 3 }}>.env</code>, then restart the backend.
-          </span>
-        )}
-      </div>
-
-      {connected && (
-        <>
-          {/* Repo selector */}
-          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-            <select className="form-select" style={{ flex: 1, maxWidth: 320 }} value={selected} onChange={e => setSelected(e.target.value)}>
-              {repos.map(r => <option key={r.full_name} value={r.full_name}>{r.full_name}</option>)}
-            </select>
-            {["issues", "prs", "commits"].map(t => (
-              <button key={t} className={`btn btn-sm ${tab === t ? "btn-primary" : "btn-ghost"}`} onClick={() => setTab(t)}>
-                {t === "issues" ? <><AlertCircle size={12} /> Issues</> : t === "prs" ? <><GitPullRequest size={12} /> PRs</> : <><GitCommit size={12} /> Commits</>}
-              </button>
-            ))}
-          </div>
-
-          {loading ? <div className="spinner" /> : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {data.length === 0 && <p style={{ color: "var(--muted)", fontSize: 13 }}>Nothing here.</p>}
-              {data.map((item, i) => (
-                <div key={i} style={{
-                  background: "var(--surface2)", border: "1px solid var(--border)",
-                  borderRadius: 8, padding: "9px 12px",
-                  display: "flex", alignItems: "flex-start", gap: 10,
-                }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {tab === "commits" ? item.message : `#${item.number} ${item.title}`}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2, display: "flex", gap: 8 }}>
-                      {tab === "commits" && <span>{item.sha} · {item.author} · {fmtDate(item.date)}</span>}
-                      {tab === "issues" && <>{item.labels.map(l => <span key={l} className="tag">{l}</span>)} <span>{fmtDate(item.updated)}</span></>}
-                      {tab === "prs" && <><span>{item.head} → {item.base}</span> {item.draft && <span className="badge badge-todo">draft</span>} <span>{fmtDate(item.updated)}</span></>}
-                    </div>
-                  </div>
-                  <a href={item.url || item.html_url} target="_blank" rel="noreferrer" style={{ color: "var(--muted)", flexShrink: 0 }}>
-                    <ExternalLink size={12} />
-                  </a>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {connected && (
-        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)", fontSize: 12, color: "var(--muted)" }}>
-          💡 To push a task to GitHub, go to <strong style={{ color: "var(--text)" }}>Tasks</strong>, hover a task, and click the GitHub icon.
-        </div>
-      )}
-    </SectionCard>
-  );
-}
-
 // ── Main Page ────────────────────────────────────────────────────────────
 export default function Integrations() {
   const [status, setStatus] = useState(null);
@@ -254,7 +165,6 @@ export default function Integrations() {
         <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Connect external tools to your Command Center.</p>
       </div>
       <GoogleCalendarSection connected={!!status?.google_calendar} canWrite={!!status?.google_calendar_can_write} onRefresh={load} />
-      <GitHubSection connected={!!status?.github} />
     </div>
   );
 }

@@ -13,12 +13,10 @@ from app.routers import (
     tasks,
     notes,
     documents,
-    meetings,
     dashboard,
     chat,
     knowledge,
     integrations,
-    meeting_intelligence,
     tools,
 )
 
@@ -62,12 +60,10 @@ app.include_router(projects.router)
 app.include_router(tasks.router)
 app.include_router(notes.router)
 app.include_router(documents.router)
-app.include_router(meetings.router)
 app.include_router(dashboard.router)
 app.include_router(chat.router)
 app.include_router(knowledge.router)
 app.include_router(integrations.router)
-app.include_router(meeting_intelligence.router)
 app.include_router(tools.router)
 
 

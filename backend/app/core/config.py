@@ -30,10 +30,6 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/integrations/google/callback"
 
-    # GitHub
-    GITHUB_PAT: str = ""
-    GITHUB_USERNAME: str = ""
-
     UPLOADS_DIR: Path = Path(__file__).resolve().parents[3] / "uploads"
     KNOWLEDGE_DIR: Path = Path(__file__).resolve().parents[3] / "knowledge"
 

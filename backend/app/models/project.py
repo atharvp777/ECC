@@ -7,11 +7,11 @@ from app.core.database import Base
 
 
 class ProjectCategory(str, enum.Enum):
-    BAJA = "baja"
-    AGROVAULT = "agrovault"
-    COLLEGE = "college"
     PERSONAL = "personal"
-    INTERNSHIP = "internship"
+    BAJA = "baja"
+    JOBPREP = "jobprep"
+    COLLEGE = "college"
+    STUDYABROAD = "studyabroad"
 
 
 class ProjectStatus(str, enum.Enum):
@@ -54,9 +54,6 @@ class Project(Base):
     )
     documents: Mapped[list["Document"]] = relationship(  # noqa: F821
         "Document", back_populates="project", cascade="all, delete-orphan"
-    )
-    meetings: Mapped[list["Meeting"]] = relationship(  # noqa: F821
-        "Meeting", back_populates="project", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

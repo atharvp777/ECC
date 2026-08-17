@@ -39,18 +39,6 @@ export const updateDocument = (id, data) => api.patch(`/documents/${id}`, data).
 export const deleteDocument = (id) => api.delete(`/documents/${id}`);
 export const getDocumentDownloadUrl = (id) => `${API_BASE_URL}/documents/${id}/download`;
 
-// Meetings
-export const getMeetings = (params = {}) => api.get("/meetings/", { params }).then(r => r.data);
-export const getMeeting = (id) => api.get(`/meetings/${id}`).then(r => r.data);
-export const createMeeting = (data) => api.post("/meetings/", data).then(r => r.data);
-export const updateMeeting = (id, data) => api.patch(`/meetings/${id}`, data).then(r => r.data);
-export const deleteMeeting = (id) => api.delete(`/meetings/${id}`);
-export const addActionItem = (meetingId, data) =>
-  api.post(`/meetings/${meetingId}/action-items`, data).then(r => r.data);
-export const updateActionItem = (meetingId, itemId, data) =>
-  api.patch(`/meetings/${meetingId}/action-items/${itemId}`, data).then(r => r.data);
-
-
 // Knowledge / Documents AI
 export const searchDocs = (query, top_k = 5) =>
   api.post("/knowledge/search", { query, top_k }).then(r => r.data);
@@ -63,29 +51,6 @@ export const ingestDoc = (docId) =>
 
 export const indexStatus = () =>
   api.get("/knowledge/status").then(r => r.data);
-
-
-// Meeting Intelligence
-export const summarizeMeeting = (meetingId) =>
-  api.post(`/meetings/intelligence/summarize/${meetingId}`).then(r => r.data);
-
-export const transcribeMeeting = (meetingId, file) => {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  return api
-    .post(`/meetings/intelligence/transcribe/${meetingId}`, formData)
-    .then(r => r.data);
-};
-
-export const fullPipeline = (meetingId, file) => {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  return api
-    .post(`/meetings/intelligence/pipeline/${meetingId}`, formData)
-    .then(r => r.data);
-};
 
 
 // Integrations
@@ -101,34 +66,3 @@ export const getGoogleEvents = (days = 14, maxResults = 20) =>
 
 export const disconnectGoogle = () =>
   api.delete("/integrations/google/disconnect").then(r => r.data);
-
-export const getGithubRepos = (limit = 30) =>
-  api
-    .get("/integrations/github/repos", {
-      params: { limit },
-    })
-    .then(r => r.data);
-
-export const getGithubIssues = (repo, limit = 20) =>
-  api
-    .get("/integrations/github/issues", {
-      params: { repo, limit },
-    })
-    .then(r => r.data);
-
-export const getGithubPRs = (repo, limit = 20) =>
-  api
-    .get("/integrations/github/prs", {
-      params: { repo, limit },
-    })
-    .then(r => r.data);
-
-export const getGithubCommits = (repo, limit = 15) =>
-  api
-    .get("/integrations/github/commits", {
-      params: { repo, limit },
-    })
-    .then(r => r.data);
-
-export const pushTaskToGithub = (data) =>
-  api.post("/integrations/github/push-task", data).then(r => r.data);

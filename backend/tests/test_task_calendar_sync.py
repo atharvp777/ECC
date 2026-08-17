@@ -765,7 +765,7 @@ def test_chat_planner_misroutes_update_event_id_to_task_title_reroutes(db_sessio
          patch.object(google_calendar, "create_calendar_event") as mock_create:
         reply = _clarify(planner_payload, "Move work on the BAJA wiring to tomorrow.", db_session)
 
-    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    assert 'Moved "work on the BAJA wiring" to your Google Calendar.' in reply
     mock_update.assert_called_once()
     mock_create.assert_not_called()
     assert t2.google_calendar_event_id == "evt_existing"
@@ -1143,7 +1143,7 @@ def test_chat_normalizes_planner_fabricated_update_to_task_tool(db_session):
     mock_create.assert_not_called()
     mock_update.assert_called_once()
     assert mock_update.call_args.args[0] == "evt_qa_scheduled"
-    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+    assert 'Moved "QA scheduled task" to your Google Calendar.' in reply
 
 
 def test_chat_move_linked_task_updates_existing_event(db_session):
@@ -1173,7 +1173,7 @@ def test_chat_move_linked_task_updates_existing_event(db_session):
     mock_create.assert_not_called()
     mock_update.assert_called_once()
     assert mock_update.call_args.args[0] == "evt_qa_scheduled"
-    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+    assert 'Moved "QA scheduled task" to your Google Calendar.' in reply
 
 
 def test_chat_move_unlinked_task_creates_event_once(db_session):
@@ -1203,7 +1203,105 @@ def test_chat_move_unlinked_task_creates_event_once(db_session):
     mock_update.assert_not_called()
     db_session.refresh(task)
     assert task.google_calendar_event_id == "evt_moved"
-    assert 'Added "QA scheduled task" to your Google Calendar.' in reply
+    assert 'Moved "QA scheduled task" to your Google Calendar.' in reply
+
+
+def test_reschedule_reply_says_moved_not_added(db_session):
+    """A successful MOVE/RESCHEDULE must reply "Moved …", never "Added …".
+
+    The underlying operation (same-event update, no duplicate) is unchanged;
+    only the response wording is asserted here.
+    """
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {
+            "task_title": "QA scheduled task",
+            "when": "tomorrow",
+            "start_time": "20:00",
+            "duration_minutes": 60,
+            "timezone": "Asia/Kolkata",
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_qa_scheduled"}) as mock_update, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 8 PM for one hour."}],
+                db_session,
+            )
+
+    assert 'Moved "QA scheduled task" to your Google Calendar.' in reply
+    assert "Added" not in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == "evt_qa_scheduled"
+
+
+def test_reschedule_reply_via_planner_reroute_says_moved_not_added(db_session):
+    """Reschedule requests that the planner mis-routes to update_calendar_event
+    (fabricating the event id from the task title) must also render "Moved …"
+    after the server re-routes them through add_task_to_calendar."""
+    task = _qa_scheduled_task(db_session)
+    planner_payload = {
+        "tool": "update_calendar_event",
+        "args": {
+            "event_id": "QA scheduled task",
+            "when": "tomorrow",
+            "start_time": "20:00",
+            "timezone": "Asia/Kolkata",
+        },
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_qa_scheduled"}) as mock_update, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Move QA scheduled task to tomorrow at 8 PM for one hour."}],
+                db_session,
+            )
+
+    assert 'Moved "QA scheduled task" to your Google Calendar.' in reply
+    assert "Added" not in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == "evt_qa_scheduled"
+
+
+def test_add_reply_still_says_added_not_moved(db_session):
+    """Fresh add/link requests must keep saying "Added …", never "Moved …"."""
+    task = _linked_task(db_session, title="Wiring")  # linked but request is an add
+    planner_payload = {
+        "tool": "add_task_to_calendar",
+        "args": {"task_title": "Wiring", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_existing"}) as mock_update, \
+             patch.object(google_calendar, "create_calendar_event") as mock_create:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "Put my Wiring task on my calendar tomorrow."}],
+                db_session,
+            )
+
+    assert 'Added "Wiring" to your Google Calendar.' in reply
+    assert "Moved" not in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == "evt_existing"
 
 
 def test_dispatcher_rejects_fabricated_event_id_no_google_call(db_session):

@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import re
 from app.models import Project, Task
 from app.models.project import ProjectCategory
+from app.models.task import TaskType
 from app.services.google_calendar import (
     get_upcoming_events as gc_get_upcoming_events,
     create_calendar_event as gc_create_calendar_event,
@@ -43,6 +44,7 @@ class ListTasksRequest(BaseModel):
 class CreateTaskRequest(BaseModel):
     title: str
     priority: str = "MEDIUM"
+    task_type: Optional[str] = "work"
     deadline: Optional[str] = None
     deadline_when: Optional[str] = None
     project_id: Optional[int] = None
@@ -58,6 +60,7 @@ class UpdateTaskRequest(BaseModel):
     task_id: int
     title: Optional[str] = None
     priority: Optional[str] = None
+    task_type: Optional[str] = None
     deadline: Optional[str] = None
     deadline_when: Optional[str] = None
     project_id: Optional[int] = None
@@ -560,12 +563,25 @@ def _normalize_project_category(category: str | ProjectCategory | None) -> str:
             return member.value
 
     raise ValueError(
-        "Invalid project category. Use one of: baja, agrovault, college, personal, internship."
+        "Invalid project category. Use one of: personal, baja, jobprep, college, studyabroad."
     )
 
 
 def _project_exists(db: Session, project_id: int) -> bool:
     return db.query(Project.id).filter(Project.id == project_id).first() is not None
+
+
+def _normalize_task_type(value: str | TaskType | None) -> TaskType:
+    """Coerce a task_type string (value or name, any case) into a TaskType member."""
+    if value is None or value == "":
+        return TaskType.WORK
+    if isinstance(value, TaskType):
+        return value
+    normalized = str(value).strip().lower()
+    for member in TaskType:
+        if normalized in {member.name.lower(), member.value.lower()}:
+            return member
+    return TaskType.WORK
 
 
 def list_projects(db: Session, req: ListProjectsRequest) -> Dict[str, Any]:
@@ -616,6 +632,7 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     task = Task(
         title=req.title,
         priority=req.priority,
+        task_type=_normalize_task_type(getattr(req, "task_type", None)),
         deadline=deadline,
         project_id=req.project_id,
     )
@@ -663,6 +680,9 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
 
     title_changed = "title" in update_data
     schedule_changed = "scheduled_start" in update_data or "scheduled_end" in update_data
+
+    if "task_type" in update_data:
+        update_data["task_type"] = _normalize_task_type(update_data["task_type"])
 
     for field, value in update_data.items():
         if field == "deadline" and value is not None:

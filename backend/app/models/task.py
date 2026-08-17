@@ -20,6 +20,15 @@ class TaskStatus(str, enum.Enum):
     DONE = "done"
 
 
+class TaskType(str, enum.Enum):
+    """What kind of task this is. Meetings are stored as tasks (task_type=meeting)
+    so reminders can also be linked to Google Calendar."""
+
+    WORK = "work"
+    REMINDER = "reminder"
+    MEETING = "meeting"
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -32,6 +41,9 @@ class Task(Base):
     )
     status: Mapped[TaskStatus] = mapped_column(
         SAEnum(TaskStatus), default=TaskStatus.TODO
+    )
+    task_type: Mapped[TaskType] = mapped_column(
+        SAEnum(TaskType), default=TaskType.WORK
     )
 
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
