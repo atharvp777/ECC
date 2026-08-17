@@ -215,6 +215,35 @@ def test_identify_project_fuzzy_variants(db_session):
         assert _identify_document_project(db_session, phrase) == proj, phrase
 
 
+def test_project_document_context_multiple_documents(db_session, tmp_path):
+    """Several documents in one project are all exposed in the content block."""
+    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="ACTIVE")
+    db_session.add(proj)
+    db_session.commit()
+    db_session.refresh(proj)
+    f1 = tmp_path / "one.txt"
+    f1.write_text("Course A content.")
+    f2 = tmp_path / "two.txt"
+    f2.write_text("Course B content.")
+    db_session.add_all([
+        Document(filename="one.txt", original_filename="one.txt", file_path=str(f1),
+                 mime_type="text/plain", file_size_bytes=f1.stat().st_size,
+                 title="Course A", project_id=proj.id),
+        Document(filename="two.txt", original_filename="two.txt", file_path=str(f2),
+                 mime_type="text/plain", file_size_bytes=f2.stat().st_size,
+                 title="Course B", project_id=proj.id),
+    ])
+    db_session.commit()
+
+    result = _project_document_context(
+        db_session,
+        [{"role": "user", "content": "What does the insem syllabus contain?"}],
+    )
+
+    assert "Course A content." in result
+    assert "Course B content." in result
+
+
 def test_document_text_is_marked_untrusted_against_prompt_injection(db_session, tmp_path):
     """Document contents are DATA, not instructions. A prompt-injection attempt
     embedded in an uploaded file must be framed as untrusted reference material,

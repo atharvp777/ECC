@@ -119,3 +119,66 @@ def test_remove_document_valid_index_keeps_other_docs(index_files):
     knowledge_service.remove_document(1)
     remaining, _ = knowledge_service._load_index()
     assert remaining == [original[1]]
+
+
+# ----------------------------------------------------------------------
+# extract_text_from_file — robustness across missing/empty/malformed files
+# ----------------------------------------------------------------------
+def test_extract_missing_file_returns_empty(tmp_path):
+    assert knowledge_service.extract_text_from_file(
+        str(tmp_path / "nope.pdf"), "application/pdf"
+    ) == ""
+
+
+def test_extract_unsupported_mime_returns_empty(tmp_path):
+    f = tmp_path / "notes.docx"
+    f.write_bytes(b"PK")
+    assert knowledge_service.extract_text_from_file(str(f), "application/zip") == ""
+
+
+def test_extract_malformed_pdf_returns_failure_marker(tmp_path):
+    f = tmp_path / "bad.pdf"
+    f.write_bytes(b"%PDF-1.4 not a real pdf at all")
+    text = knowledge_service.extract_text_from_file(str(f), "application/pdf")
+    assert text.startswith("[PDF extraction failed")
+
+
+def test_extract_empty_pdf_returns_empty(tmp_path):
+    # An empty file is not a valid PDF; PyPDF2 raises, which is surfaced as a
+    # failure marker — never a crash.
+    f = tmp_path / "empty.pdf"
+    f.write_bytes(b"")
+    text = knowledge_service.extract_text_from_file(str(f), "application/pdf")
+    assert text == "" or text.startswith("[PDF extraction failed")
+
+
+def test_extract_text_plain_clips_to_max_chars(tmp_path):
+    f = tmp_path / "big.txt"
+    f.write_text("word " * 2000)  # ~10KB
+    text = knowledge_service.extract_text_from_file(str(f), "text/plain", max_chars=100)
+    assert len(text) == 100
+    assert text == ("word " * 2000)[:100]
+
+
+def test_extract_text_plain_unlimited_when_max_zero(tmp_path):
+    f = tmp_path / "big.txt"
+    f.write_text("word " * 100)
+    text = knowledge_service.extract_text_from_file(str(f), "text/plain", max_chars=0)
+    assert len(text) == len("word " * 100)
+
+
+def test_extract_text_markdown_supported(tmp_path):
+    f = tmp_path / "notes.md"
+    f.write_text("# Title\n\nbody text")
+    text = knowledge_service.extract_text_from_file(str(f), "text/markdown")
+    assert "Title" in text and "body text" in text
+
+
+def test_extract_docx_malformed_returns_failure_marker(tmp_path):
+    f = tmp_path / "bad.docx"
+    f.write_bytes(b"this is not a docx")
+    text = knowledge_service.extract_text_from_file(
+        str(f),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    assert text.startswith("[DOCX extraction failed")

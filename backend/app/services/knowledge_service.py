@@ -46,7 +46,20 @@ _STOP_WORDS = {
 }
 
 # ── Text extraction ───────────────────────────────────────────────────────────
-def extract_text_from_file(file_path: str, mime_type: str) -> str:
+def extract_text_from_file(file_path: str, mime_type: str, max_chars: int = 0) -> str:
+    """Extract text from an uploaded file.
+
+    ``max_chars`` bounds the returned text (0 = no limit). For PDFs the reader
+    stops early once the limit is reached, so a huge PDF never has to be fully
+    parsed when only a bounded excerpt is needed. Unsupported or unreadable
+    files return ``""``; PDF/DOCX extraction failures return a ``"[...]"``
+    marker so callers can distinguish "no content" from "failed".
+    """
+    def _clip(text: str) -> str:
+        if max_chars and max_chars > 0 and len(text) > max_chars:
+            return text[:max_chars]
+        return text
+
     path = Path(file_path)
     if not path.exists():
         return ""
@@ -54,22 +67,26 @@ def extract_text_from_file(file_path: str, mime_type: str) -> str:
         try:
             import PyPDF2
             text = []
+            total = 0
             with open(path, "rb") as f:
                 reader = PyPDF2.PdfReader(f)
                 for page in reader.pages:
                     t = page.extract_text()
                     if t:
                         text.append(t)
-            return "\n".join(text)
+                        total += len(t)
+                        if max_chars and max_chars > 0 and total >= max_chars:
+                            break
+            return _clip("\n".join(text))
         except Exception as e:
             return f"[PDF extraction failed: {e}]"
     if mime_type in ("text/plain", "text/markdown"):
-        return path.read_text(encoding="utf-8", errors="replace")
+        return _clip(path.read_text(encoding="utf-8", errors="replace"))
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         try:
             import docx
             doc = docx.Document(path)
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            return _clip("\n".join(p.text for p in doc.paragraphs if p.text.strip()))
         except Exception as e:
             return f"[DOCX extraction failed: {e}]"
     return ""

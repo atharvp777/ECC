@@ -515,7 +515,7 @@ def _project_document_context(db: Session, messages: List[dict]) -> str:
     blocks = []
     total = 0
     for doc in project.documents:
-        text = extract_text_from_file(doc.file_path, doc.mime_type)
+        text = extract_text_from_file(doc.file_path, doc.mime_type, max_chars=_MAX_DOC_TEXT_PER_DOC)
         label = doc.title or doc.original_filename
         if not text.strip() or text.startswith("["):
             blocks.append(f"Document: {label} (text could not be extracted)")
