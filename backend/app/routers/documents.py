@@ -164,9 +164,11 @@ def delete_document(doc_id: int, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    # Remove file from disk
-    path = Path(doc.file_path)
-    if path.exists():
+    # Remove file from disk. Defense-in-depth: never delete a file outside the
+    # application's uploads directory, even if a document row was tampered with.
+    path = Path(doc.file_path).resolve()
+    uploads_root = settings.UPLOADS_DIR.resolve()
+    if path.is_relative_to(uploads_root) and path.exists():
         path.unlink()
     # Remove from knowledge base index
     remove_document(doc.id)

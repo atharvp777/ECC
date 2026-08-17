@@ -186,3 +186,47 @@ def test_download_rejects_path_traversal(client, tmp_path):
 
     assert response.status_code == 404
     assert "outside the uploads directory" in response.json()["detail"]
+
+
+# ----------------------------------------------------------------------
+# Deletion safety
+# ----------------------------------------------------------------------
+def test_delete_document_removes_file_within_uploads(client):
+    test_client, db, uploads = client
+
+    upload = _upload(test_client)
+    doc_id = upload.json()["id"]
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    stored = uploads / doc.filename
+    assert stored.exists()
+
+    response = test_client.delete(f"/documents/{doc_id}")
+
+    assert response.status_code == 204
+    assert not stored.exists()
+    assert db.query(Document).filter(Document.id == doc_id).first() is None
+
+
+def test_delete_document_never_deletes_outside_uploads(client, tmp_path):
+    """A tampered document row must never cause a delete outside uploads."""
+    test_client, db, uploads = client
+
+    outside = tmp_path / "precious.txt"
+    outside.write_text("do not delete")
+    doc = Document(
+        filename="evil.txt",
+        original_filename="evil.txt",
+        file_path=str(outside),
+        mime_type="text/plain",
+        file_size_bytes=14,
+        title="evil",
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+
+    response = test_client.delete(f"/documents/{doc.id}")
+
+    assert response.status_code == 204
+    assert outside.exists()
+    assert db.query(Document).filter(Document.id == doc.id).first() is None
