@@ -728,6 +728,70 @@ def test_chat_put_work_task_links_the_correct_task(db_session):
     assert t1.google_calendar_event_id is None
 
 
+def test_chat_planner_misroutes_existing_task_to_calendar_event_reroutes(db_session):
+    # The planner sometimes returns the raw create_calendar_event tool with a
+    # summary that matches an existing task. The server must re-route through
+    # the task-calendar tool (idempotent link/update), never create a
+    # duplicate event for the task.
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    planner_payload = {
+        "tool": "create_calendar_event",
+        "args": {"summary": "Wiring Diagram", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "create_calendar_event", return_value={"id": "evt_wd"}) as mock_create:
+        reply = _clarify(planner_payload, "Put Wiring Diagram on my calendar tomorrow.", db_session)
+
+    assert 'Added "Wiring Diagram" to your Google Calendar.' in reply
+    mock_create.assert_called_once()
+    assert t3.google_calendar_event_id == "evt_wd"
+    assert t1.google_calendar_event_id is None
+    assert t2.google_calendar_event_id is None
+
+
+def test_chat_planner_misroutes_update_event_id_to_task_title_reroutes(db_session):
+    # The planner sometimes fabricates an event_id from a TASK TITLE for
+    # update_calendar_event ("Move <task> to ..."). The server must re-route
+    # through add_task_to_calendar (which updates the task's real linked
+    # event) instead of failing on an unknown event id — never create a
+    # duplicate or claim a fake event update.
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_existing"
+    db_session.commit()
+    planner_payload = {
+        "tool": "update_calendar_event",
+        "args": {"event_id": "work on the BAJA wiring", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    with patch.object(google_calendar, "update_calendar_event", return_value={"id": "evt_existing"}) as mock_update, \
+         patch.object(google_calendar, "create_calendar_event") as mock_create:
+        reply = _clarify(planner_payload, "Move work on the BAJA wiring to tomorrow.", db_session)
+
+    assert 'Added "work on the BAJA wiring" to your Google Calendar.' in reply
+    mock_update.assert_called_once()
+    mock_create.assert_not_called()
+    assert t2.google_calendar_event_id == "evt_existing"
+    assert t1.google_calendar_event_id is None
+
+
+def test_chat_planner_misroutes_delete_event_id_to_task_title_reroutes(db_session):
+    # Same defense for delete_calendar_event: an event_id fabricated from a
+    # task title must be re-routed to remove_task_from_calendar, which deletes
+    # the task's real linked event (never a fabricated event).
+    t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
+    t2.google_calendar_event_id = "evt_existing"
+    db_session.commit()
+    planner_payload = {
+        "tool": "delete_calendar_event",
+        "args": {"event_id": "work on the BAJA wiring"},
+    }
+    with patch.object(google_calendar, "delete_calendar_event") as mock_delete:
+        reply = _clarify(planner_payload, "Remove work on the BAJA wiring from my calendar.", db_session)
+
+    assert 'Removed "work on the BAJA wiring" from your Google Calendar.' in reply
+    mock_delete.assert_called_once_with("evt_existing")
+    assert t2.google_calendar_event_id is None
+    assert t1.google_calendar_event_id is None
+
+
 def test_chat_remove_resolves_and_unlinks_correct_task(db_session):
     t1, t2, t3, t4 = _seed_wiring_tasks(db_session)
     t1.google_calendar_event_id = "evt_finish"

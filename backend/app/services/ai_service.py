@@ -2,12 +2,19 @@ import logging
 import groq
 from groq import Groq
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.services.ai_providers import (
+    AIProviderError,
+    complete_text,
+    configured_message as ai_provider_configured_message,
+    is_configured as ai_provider_configured,
+)
 from app.services.tool_dispatcher import execute_tool
 from app.services.google_calendar import get_upcoming_events, is_connected
 
@@ -222,11 +229,10 @@ def _friendly_ai_error_message(exc: Exception) -> str:
     The real exception is logged by the caller; the frontend only ever sees
     one of these strings — never a traceback or internal detail.
     """
-    if not settings.GROQ_API_KEY:
-        return (
-            "The AI service isn't configured yet. "
-            "Add GROQ_API_KEY to backend/.env and restart the backend."
-        )
+    if isinstance(exc, AIProviderError):
+        return str(exc)
+    if not ai_provider_configured():
+        return ai_provider_configured_message()
 
     auth_error = getattr(groq, "AuthenticationError", None)
     rate_error = getattr(groq, "RateLimitError", None)
@@ -605,21 +611,22 @@ or for a calendar event:
 """
 
     try:
-        client = Groq(api_key=settings.GROQ_API_KEY)
-
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": planner_prompt,
-                }
-            ],
-            max_tokens=300,
+        # The planner prompt is large; passing it as the user message (instead
+        # of an empty user turn under a huge system instruction) stops Gemini
+        # from echoing the prompt back or emitting a truncated tool call.
+        # json_mode pins Gemini's response_mime_type so we get clean JSON.
+        raw = complete_text(
+            system=None,
+            messages=[{"role": "user", "content": planner_prompt}],
+            max_tokens=1024,
             temperature=0,
+            json_mode=True,
         )
 
-        raw = response.choices[0].message.content
+        if not raw or not raw.strip():
+            return None
+
+        raw = raw.strip()
 
         if raw == "NONE":
             return None
@@ -630,19 +637,65 @@ or for a calendar event:
             if raw.startswith("json"):
                 raw = raw[4:].strip()
 
-        parsed = json.loads(raw)
+        # Some Gemini outputs arrive in the SDK function-call shape
+        # {"name": "...", "arguments": {...}} instead of the planner JSON
+        # contract {"tool": "...", "args": {...}}. Normalize it here.
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            # The model sometimes emits prose before/after the JSON object.
+            # Extract the first balanced JSON object if one exists.
+            parsed = _extract_embedded_json(raw)
+
+        # json_mode forces valid JSON, so a "no tool" answer may arrive as the
+        # JSON string "NONE" rather than the bare token NONE.
+        if parsed == "NONE":
+            return None
 
         if not isinstance(parsed, dict):
             return None
 
+        if "name" in parsed and "arguments" in parsed and "tool" not in parsed:
+            parsed = {"tool": parsed["name"], "args": parsed["arguments"]}
+
         if "tool" not in parsed or "args" not in parsed:
             return None
 
-        return parsed
+        if not isinstance(parsed.get("args"), dict):
+            return None
+
+        return {"tool": parsed["tool"], "args": parsed["args"]}
 
     except Exception as exc:
         logger.warning("Tool planner failed for request; falling back to general chat: %s", exc)
         return None
+
+
+def _extract_embedded_json(raw: str):
+    """Extract the first balanced JSON object embedded in free text.
+
+    Gemini sometimes wraps its tool call in prose (or appends reasoning after
+    the closing brace). We scan for the first '{' and try each candidate end
+    that yields a valid JSON object, so a trailing explanation never breaks
+    the planner protocol.
+    """
+    start = raw.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = raw[start : i + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    continue
+    return None
 
 def chat_with_ai(messages: List[dict], db: Session) -> str:
     """
@@ -679,8 +732,8 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         # clearly targets a TASK, re-route it through the task-calendar tools:
         # the server resolves the task and its linked event, and the task row
         # stays in sync with Google Calendar.
-        if planned_tool_call and calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
-            op = _task_calendar_operation(last_user)
+        if planned_tool_call and tool_name in CALENDAR_WRITE_TOOLS:
+            op = _task_calendar_operation(last_user) if calendar_write_requested else None
             if op == "remove":
                 tool_name = "remove_task_from_calendar"
                 args = {}
@@ -692,6 +745,39 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                     "duration_minutes": args.get("duration_minutes", 60),
                     "timezone": args.get("timezone", SYSTEM_TIMEZONE),
                 }
+            else:
+                # The planner sometimes routes an EXISTING task to the raw
+                # calendar tools. If the event summary (create) or event_id
+                # (update/delete, where the planner may fabricate one from the
+                # task title) matches a task title, re-route through the
+                # task-calendar tools so the server resolves the task and its
+                # linked event (idempotent update, never a fabricated
+                # duplicate, never a wrong event deleted). This must hold even
+                # when the message has no literal "calendar" word ("move X to
+                # tomorrow").
+                from app.models.task import Task
+
+                raw_reference = args.get("summary") or args.get("event_id")
+                if raw_reference:
+                    ref = str(raw_reference).strip()
+                    matched_task = (
+                        db.query(Task)
+                        .filter(func.lower(func.trim(Task.title)) == ref.lower())
+                        .first()
+                    )
+                    if matched_task is not None:
+                        if tool_name == "delete_calendar_event":
+                            tool_name = "remove_task_from_calendar"
+                            args = {"task_title": ref}
+                        else:
+                            tool_name = "add_task_to_calendar"
+                            args = {
+                                "task_title": ref,
+                                "when": args.get("when"),
+                                "start_time": args.get("start_time"),
+                                "duration_minutes": args.get("duration_minutes", 60),
+                                "timezone": args.get("timezone", SYSTEM_TIMEZONE),
+                            }
 
         if planned_tool_call and tool_name == "create_task":
             if args.get("project_name") is None and args.get("project_id") is not None:
@@ -844,27 +930,18 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             return _CALENDAR_NOT_UPDATED_MESSAGE
         return _CALENDAR_NOT_CREATED_MESSAGE
 
-    # ---- 5️⃣ No tool request – fall back to LLM ----------------------------
-    if not settings.GROQ_API_KEY:
-        logger.error("GROQ_API_KEY is not configured – AI chat unavailable")
-        return (
-            "The AI service isn't configured yet. "
-            "Add GROQ_API_KEY to backend/.env and restart the backend."
-        )
+# ---- 5️⃣ No tool request – fall back to LLM ----------------------------
+    if not ai_provider_configured():
+        logger.error("AI provider is not configured – AI chat unavailable")
+        return ai_provider_configured_message()
 
     try:
-        client = Groq(api_key=settings.GROQ_API_KEY)
-        full_messages = [
-            {"role": "system", "content": SYSTEM_PROMPT + context},
-            *messages,
-        ]
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=full_messages,
+        content = complete_text(
+            system=SYSTEM_PROMPT + context,
+            messages=messages,
             max_tokens=1024,
             temperature=0.7,
         )
-        content = response.choices[0].message.content
         if not content or not isinstance(content, str):
             raise ValueError("AI returned an empty or malformed response")
         return content

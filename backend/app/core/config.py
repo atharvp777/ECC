@@ -10,6 +10,14 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = f"sqlite:///{Path(__file__).resolve().parents[3]}/ecc.db"
 
+    # AI provider — "gemini" (gemini-3.5-flash-lite) or "groq" (llama-3.3-70b).
+    # Gemini is the primary provider; Groq stays as a fallback.
+    AI_PROVIDER: str = "gemini"
+    AI_MODEL: str = "gemini-3.5-flash-lite"
+
+    # Google Gemini — primary AI provider
+    GEMINI_API_KEY: str = ""
+
     # Groq — free API, replaces OpenAI for all chat + summarization
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"

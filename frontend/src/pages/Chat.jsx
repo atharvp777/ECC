@@ -31,12 +31,20 @@ export default function Chat() {
       return [initialMessage];
     }
   });
-  const [input, setInput] = useState("");
+const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [modelIndicator, setModelIndicator] = useState("Loading AI model…");
   const messagesEndRef = useRef(null);
-
-  const modelIndicator = "llama-3.3-70b (Groq)";
   const contextInfo = "Live project context loaded";
+
+  useEffect(() => {
+    fetch("http://127.0.0.1:8000/api/chat/status")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && data.display) setModelIndicator(data.display);
+      })
+      .catch(() => setModelIndicator("AI model unavailable"));
+  }, []);
 
   const styles = {
     shell: {

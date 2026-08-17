@@ -220,21 +220,26 @@ def answer_from_docs(question: str) -> dict:
         - "sources": list of document titles used as context (may be empty)
 
     Behaviour:
-      * If GROQ_API_KEY is missing, returns a friendly warning.
+      * If the AI provider (Gemini by default) is not configured, returns a
+        friendly warning.
       * Searches the TF‑IDF knowledge base for relevant chunks.
       * If relevant chunks are found, they are inserted into the prompt as context.
       * If no chunks are found, an empty‑context prompt is used – the model is
         instructed not to fabricate information.
       * If a project is identified from the question, its related information
         (description, tasks, notes, documents) is added to the context.
-      * Calls Groq, handling any unexpected errors gracefully.
+      * Calls the active AI provider, handling any unexpected errors gracefully.
       * Always returns the same structure expected by the frontend.
     """
     # -----------------------------------------------------------------------
-    # 1️⃣  Guard‑clause when the Groq key is not configured
+    # 1️⃣  Guard‑clause when the active AI provider is not configured
     # -----------------------------------------------------------------------
-    if not settings.GROQ_API_KEY:
-        return {"answer": "⚠ Groq API key not configured.", "sources": []}
+    from app.services.ai_providers import (
+        complete_text,
+        is_configured as ai_provider_configured,
+    )
+    if not ai_provider_configured():
+        return {"answer": "⚠ The AI service isn't configured yet.", "sources": []}
 
     # -----------------------------------------------------------------------
     # 2️⃣  Retrieve relevant document chunks
@@ -323,7 +328,7 @@ def answer_from_docs(question: str) -> dict:
         db.close()
 
     # -----------------------------------------------------------------------
-    # 4️⃣  Build the prompt for Groq
+    # 4️⃣  Build the prompt for the AI provider
     # -----------------------------------------------------------------------
     # The model is told explicitly that the context may be empty and must not be invented.
     prompt = f"""Answer the question using ONLY the document excerpts below.
@@ -337,18 +342,15 @@ QUESTION: {question}
 ANSWER:"""
 
     # -----------------------------------------------------------------------
-    # 5️⃣  Call Groq with robust error handling
+    # 5️⃣  Call the active AI provider with robust error handling
     # -----------------------------------------------------------------------
     try:
-        from groq import Groq
-        client = Groq(api_key=settings.GROQ_API_KEY)
-        response = client.chat.completions.create(
-            model=settings.GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+        answer = complete_text(
+            system=prompt,
+            messages=[],
             max_tokens=800,
             temperature=0.2,
-        )
-        answer = response.choices[0].message.content.strip()
+        ).strip()
     except Exception:
         # Any unexpected error (network, API limit, etc.) – return a safe fallback
         answer = "Sorry, I couldn't generate a response right now."

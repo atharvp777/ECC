@@ -20,6 +20,30 @@ class ChatRequest(BaseModel):
     messages: list[Message]
 
 # -------------------------------------------------
+# AI provider status
+# -------------------------------------------------
+@router.get("/status")
+def ai_status():
+    """Report the active AI provider and model (no secrets).
+
+    The frontend model badge is built from this response so it always reflects
+    the backend's actual configuration instead of a hardcoded label.
+    """
+    from app.services.ai_providers import (
+        active_model,
+        active_provider,
+        display_name,
+        is_configured,
+    )
+    return {
+        "provider": active_provider(),
+        "model": active_model(),
+        "configured": is_configured(),
+        "display": display_name(),
+    }
+
+
+# -------------------------------------------------
 # Chat endpoint
 # -------------------------------------------------
 @router.post("/", response_model=dict)

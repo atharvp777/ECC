@@ -73,7 +73,7 @@ TRANSCRIPT:
 
 def summarize_transcript(transcript: str, attendees: str = "") -> dict:
     """
-    Use GPT-4o to extract summary and action items from a transcript.
+    Use the active AI provider to extract summary and action items from a transcript.
     Returns dict with: summary, key_decisions, action_items, topics_discussed
     """
     if not transcript.strip():
@@ -84,20 +84,19 @@ def summarize_transcript(transcript: str, attendees: str = "") -> dict:
             "topics_discussed": [],
         }
 
-    client = _get_client()
+    from app.services.ai_providers import complete_text
+
     prompt = SUMMARY_PROMPT.format(
         attendees=attendees or "Not specified",
         transcript=transcript[:12000],   # ~3000 tokens max input
     )
 
-    response = client.chat.completions.create(
-        model=settings.GROQ_MODEL,
-        messages=[{"role": "user", "content": prompt}],
+    raw = complete_text(
+        system=prompt,
+        messages=[],
         max_tokens=1500,
         temperature=0.3,
-    )
-
-    raw = response.choices[0].message.content.strip()
+    ).strip()
 
     # Strip markdown fences if model adds them anyway
     raw = re.sub(r"^```json\s*", "", raw)
@@ -123,10 +122,3 @@ def full_pipeline(file_path: str, attendees: str = "") -> dict:
     result     = summarize_transcript(transcript, attendees)
     result["transcript"] = transcript
     return result
-
-# Groq-compatible client helper (overrides the one above for summarization)
-def _get_groq_client():
-    from groq import Groq
-    if not settings.GROQ_API_KEY:
-        raise ValueError("GROQ_API_KEY not configured in .env")
-    return Groq(api_key=settings.GROQ_API_KEY)
