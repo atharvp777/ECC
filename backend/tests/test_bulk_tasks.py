@@ -574,3 +574,38 @@ def test_chat_complete_ambiguous_returns_clarification(db_session):
 
     assert "Which one" in reply
     assert "failed" not in reply
+
+
+# ----------------------------------------------------------------------
+# renderer error branches — honest, never fake success
+# ----------------------------------------------------------------------
+
+def test_render_task_updated_reports_calendar_sync_failure():
+    from types import SimpleNamespace
+    from app.services.ai_service import _render_task_updated, _safe_sync_reason
+
+    data = SimpleNamespace(id=7, calendar_sync_error="Google API 403")
+    assert "Updated task 7." in _render_task_updated(data)
+    assert "Calendar sync failed" in _render_task_updated(data)
+
+    # A non-write-access error is sanitized into a generic reason.
+    assert _safe_sync_reason("connection reset") == "Google Calendar is unavailable right now"
+    assert _safe_sync_reason("") == "unknown Google Calendar error"
+    assert _safe_sync_reason("Insufficient Permission") == "Insufficient Permission"
+
+
+def test_render_task_calendar_linked_sync_failure():
+    from types import SimpleNamespace
+    from app.services.ai_service import _render_task_calendar_linked
+
+    data = SimpleNamespace(title="Wind test", google_calendar_event_id=None, calendar_sync_error="Google API 403")
+    assert "couldn't add" in _render_task_calendar_linked(data)
+    assert "Google Calendar is unavailable right now" in _render_task_calendar_linked(data)
+
+
+def test_render_task_calendar_removed_sync_failure():
+    from types import SimpleNamespace
+    from app.services.ai_service import _render_task_calendar_removed
+
+    data = SimpleNamespace(title="Wind test", google_calendar_event_id="evt-1", calendar_sync_error="Google API 403")
+    assert "couldn't remove" in _render_task_calendar_removed(data)
