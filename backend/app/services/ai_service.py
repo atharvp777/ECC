@@ -293,6 +293,14 @@ def _friendly_ai_error_message(exc: Exception) -> str:
         return "The AI service returned an error. Please try again in a moment."
     return "I couldn't process that request because of an unexpected AI service error. Please try again."
 
+_MAX_CONTEXT_CHARS = 16000
+
+# Follow-ups need recent context, not unlimited history. Only the last N
+# messages are sent to the model each turn; document/project resolution still
+# scans the full conversation locally (cheap, deterministic).
+_MAX_HISTORY_MESSAGES = 20
+
+
 def _build_context(db: Session) -> str:
     now = datetime.now(timezone.utc)
     now_naive = now.replace(tzinfo=None)
@@ -387,7 +395,19 @@ def _build_context(db: Session) -> str:
     except Exception:
         pass
 
-    return "\n".join(lines)
+    return _truncate_context("\n".join(lines))
+
+
+def _truncate_context(text: str) -> str:
+    """Cap the live context so it never exhausts the model's context window.
+
+    The context is already bounded by query limits (10 overdue, 15 upcoming,
+    5 critical, 5 notes, 10 calendar events) — this is a defensive final guard.
+    """
+    if len(text) <= _MAX_CONTEXT_CHARS:
+        return text
+    logger.warning("Live context exceeded %d chars; truncating.", _MAX_CONTEXT_CHARS)
+    return text[:_MAX_CONTEXT_CHARS] + "\n\n[... context truncated for length ...]"
 
 
 def _maybe_rag(user_message: str) -> Optional[str]:
@@ -1200,7 +1220,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         doc_context = _project_document_context(db, messages)
         content = complete_text(
             system=SYSTEM_PROMPT + context + doc_context,
-            messages=messages,
+            messages=messages[-_MAX_HISTORY_MESSAGES:],
             max_tokens=1024,
             temperature=0.7,
         )

@@ -131,6 +131,25 @@ def test_chat_normal_path(db_session):
         # Ensure the function returned a string, not an exception
 
 
+def test_chat_history_is_bounded(db_session):
+    """Only the last N messages reach the model — history must not grow unbounded."""
+    from app.services import ai_service
+
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+        for i in range(ai_service._MAX_HISTORY_MESSAGES + 5)
+    ]
+    history[-1] = {"role": "user", "content": "hello"}
+
+    with patch("app.services.ai_service.complete_text", return_value="bounded ok") as mock_complete:
+        reply = chat_with_ai(history, db_session)
+
+    assert reply == "bounded ok"
+    sent = mock_complete.call_args.kwargs["messages"]
+    assert len(sent) == ai_service._MAX_HISTORY_MESSAGES
+    assert sent[0]["content"] == "msg 5"  # oldest kept is the (N-5)th message
+
+
 def test_chat_explicit_create_task_path(db_session):
     """Verify that a message that triggers a tool call results in a proper response."""
     # First, ensure a project exists for FK reference

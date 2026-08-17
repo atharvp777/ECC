@@ -50,6 +50,18 @@ def test_build_context_includes_task_ids(db_session):
     assert "Design chassis" in ctx
 
 
+def test_build_context_is_capped(monkeypatch, db_session):
+    """The live context must never exceed the configured window budget."""
+    from app.services import ai_service
+
+    monkeypatch.setattr(ai_service, "_MAX_CONTEXT_CHARS", 120)
+    ctx = _build_context(db_session)
+    marker = "[... context truncated for length ...]"
+    assert marker in ctx
+    content, _, _ = ctx.partition(marker)
+    assert len(content.rstrip("\n")) <= 120
+
+
 def test_plan_tool_call_resolves_project_id(db_session):
     """The planner should surface project_name, not invent project IDs."""
     ctx = _build_context(db_session)
