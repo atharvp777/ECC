@@ -169,16 +169,29 @@ def execute_tool(
                     return {"data": err}
                 args["project_id"] = project_id
 
-        if tool_name in ("add_task_to_calendar", "remove_task_from_calendar"):
+        if tool_name in (
+            "add_task_to_calendar",
+            "remove_task_from_calendar",
+            "update_task",
+            "complete_task",
+            "delete_task",
+        ):
             from app.services.tools import resolve_task_for_calendar
 
+            op_map = {
+                "add_task_to_calendar": "add",
+                "remove_task_from_calendar": "remove",
+                "update_task": "update",
+                "complete_task": "complete",
+                "delete_task": "delete",
+            }
             task_title = args.pop("task_title", None)
             task_id = args.get("task_id")
 
             # The user's ORIGINAL message is the authoritative task reference.
-            # The planner may choose the operation and time, but it must not
-            # paraphrase/generalize the task title, so resolve the message
-            # verbatim. task_id is only used as a tie-breaker.
+            # The planner may choose the operation and (for calendar tools) the
+            # time, but it must not paraphrase/generalize the task title, so
+            # resolve the message verbatim. task_id is only used as a tie-breaker.
             reference = user_message if user_message else task_title
 
             if reference is not None:
@@ -188,21 +201,36 @@ def execute_tool(
                     db,
                     reference,
                     task_id=task_id,
-                    op="add" if tool_name == "add_task_to_calendar" else "remove",
+                    op=op_map[tool_name],
                 )
                 if resolution["status"] != "found":
-                    # Ambiguous / not found: never pick silently. No calendar
-                    # write may happen until the user's intent is resolved.
-                    return {
-                        "data": {
-                            "error": resolution["message"],
-                            "reply_direct": True,
-                            "candidates": [t.id for t in resolution.get("candidates", [])],
+                    # A reference with NO meaningful tokens (e.g. "task 5") is a
+                    # bare-id mention — trust an explicit task_id the planner got
+                    # from the live context. Any real ambiguity still clarifies.
+                    if (
+                        task_id is not None
+                        and resolution["status"] == "not_found"
+                        and not resolution.get("had_significant_tokens", True)
+                    ):
+                        args["task_id"] = task_id
+                    else:
+                        # Ambiguous / not found: never pick silently. No mutation
+                        # may happen until the user's intent is resolved.
+                        return {
+                            "data": {
+                                "error": resolution["message"],
+                                "reply_direct": True,
+                                "candidates": [
+                                    t.id for t in resolution.get("candidates", [])
+                                ],
+                            }
                         }
-                    }
-                args["task_id"] = resolution["task"].id
+                else:
+                    args["task_id"] = resolution["task"].id
             elif task_id is None:
-                return {"data": {"error": f"{tool_name} requires a task_title or a task_id"}}
+                if tool_name in ("add_task_to_calendar", "remove_task_from_calendar"):
+                    return {"data": {"error": f"{tool_name} requires a task_title or a task_id"}}
+                return {"data": {"error": f"{tool_name} requires a task_id or a task_title"}}
 
         if tool_name == "create_calendar_event":
             from app.services.tools import build_calendar_event_body

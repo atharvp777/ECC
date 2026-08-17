@@ -424,3 +424,153 @@ def test_chat_delete_missing_is_not_fake_success(db_session):
 
     assert "no result was returned" in reply
     assert "Deleted" not in reply
+
+
+# ----------------------------------------------------------------------
+# Title-based task resolution (deterministic, never invented ids)
+# ----------------------------------------------------------------------
+def test_complete_task_resolves_by_title(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+    _task(db_session, "Other", project=proj)
+
+    result = execute_tool(
+        "complete_task",
+        {"task_title": "wiring diagram"},
+        db_session,
+        user_message="mark the wiring diagram task done",
+    )
+
+    assert result["data"].id == t1.id
+    db_session.refresh(t1)
+    assert t1.status == TaskStatus.DONE
+    assert "Other" in [t.title for t in db_session.query(Task).all()]
+
+
+def test_update_task_resolves_by_title(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+
+    result = execute_tool(
+        "update_task",
+        {"task_title": "wiring diagram", "priority": "high"},
+        db_session,
+        user_message="update the wiring diagram task priority to high",
+    )
+
+    db_session.refresh(t1)
+    assert t1.priority == TaskPriority.HIGH
+    assert result["data"].id == t1.id
+
+
+def test_delete_task_resolves_by_title(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+    _task(db_session, "Keep Me", project=proj)
+
+    result = execute_tool(
+        "delete_task",
+        {"task_title": "wiring diagram"},
+        db_session,
+        user_message="delete the wiring diagram task",
+    )
+
+    assert result["data"]["deleted_task_id"] == t1.id
+    assert db_session.query(Task).filter(Task.id == t1.id).first() is None
+    assert db_session.query(Task).filter(Task.title == "Keep Me").first() is not None
+
+
+def test_complete_task_ambiguous_title_clarifies_no_mutation(db_session):
+    proj = _project(db_session)
+    _task(db_session, "Wiring", project=proj)
+    _task(db_session, "Wiring", project=proj)  # exact duplicate title → tie
+
+    result = execute_tool(
+        "complete_task",
+        {"task_title": "wiring"},
+        db_session,
+        user_message="mark the wiring task done",
+    )
+
+    assert "reply_direct" in result["data"]
+    assert "Which one" in result["data"]["error"]
+    assert all(t.status != TaskStatus.DONE for t in db_session.query(Task).all())
+
+
+def test_complete_task_title_not_found_no_mutation(db_session):
+    proj = _project(db_session)
+    _task(db_session, "Wiring Diagram", project=proj)
+
+    result = execute_tool(
+        "complete_task",
+        {"task_title": "suspension"},
+        db_session,
+        user_message="mark the suspension task done",
+    )
+
+    assert "reply_direct" in result["data"]
+    assert "couldn't find a task matching" in result["data"]["error"]
+    assert all(t.status != TaskStatus.DONE for t in db_session.query(Task).all())
+
+
+def test_complete_task_bare_id_reference_uses_task_id(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+
+    result = execute_tool(
+        "complete_task",
+        {"task_id": t1.id},
+        db_session,
+        user_message="mark task 5 done",  # no significant title tokens
+    )
+
+    assert result["data"].id == t1.id
+    db_session.refresh(t1)
+    assert t1.status == TaskStatus.DONE
+
+
+def test_update_task_direct_id_still_works(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+
+    result = execute_tool(
+        "update_task",
+        {"task_id": t1.id, "title": "New name"},
+        db_session,
+    )
+
+    db_session.refresh(t1)
+    assert t1.title == "New name"
+
+
+def test_update_task_missing_id_no_reference_errors(db_session):
+    result = execute_tool("update_task", {"title": "X"}, db_session)
+    assert "error" in result["data"]
+    assert "requires a task_id" in result["data"]["error"]
+
+
+def test_chat_complete_ambiguous_returns_clarification(db_session):
+    from app.services.ai_service import chat_with_ai
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps({"tool": "complete_task", "args": {"task_title": "wiring"}})
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.execute_tool") as mock_execute:
+            mock_execute.return_value = {
+                "data": {
+                    "error": 'I found multiple tasks matching "wiring":\n1. Wiring\n2. Wiring Diagram\nWhich one should I mark complete?',
+                    "reply_direct": True,
+                    "candidates": [1, 2],
+                }
+            }
+            reply = chat_with_ai(
+                [{"role": "user", "content": "mark the wiring task done"}],
+                db_session,
+            )
+
+    assert "Which one" in reply
+    assert "failed" not in reply

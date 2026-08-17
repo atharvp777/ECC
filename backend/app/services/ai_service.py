@@ -616,7 +616,12 @@ Do NOT compute dates/times yourself.
 
 6. update_task
 Arguments:
-{{"task_id": integer, "title": "string or null",
+{{"task_title": "the task reference copied VERBATIM from the user's message —
+  exactly the words the user used (e.g. 'the wiring diagram task', 'task 5').
+  NEVER paraphrase, generalize or shorten it. The server resolves it.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null.",
+  "title": "string or null",
   "priority": "string or null", "deadline_when": "string or null",
   "status": "string or null", "task_type": "work | reminder | meeting or null",
   "when": "string or null",
@@ -625,7 +630,10 @@ Arguments:
 
 7. complete_task
 Arguments:
-{{"task_id": integer}}
+{{"task_title": "the task reference copied VERBATIM from the user's message,
+  exactly as the user said it. The server resolves it.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null."}}
 
 8. bulk_update_tasks
 Use when the user wants to update MULTIPLE tasks at once (e.g. "mark all my
@@ -650,8 +658,11 @@ project, use scope="all_open" with project_name=null.
 9. delete_task
 Use when the user wants to DELETE/REMOVE a task (not just complete it).
 Arguments:
-{{"task_id": integer — ONLY when the context lists that exact task with its
-  ID, or the user gave the id explicitly. NEVER invent one."}}
+{{"task_title": "the task reference copied VERBATIM from the user's message,
+  exactly as the user said it. The server resolves it.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null."}}
+NEVER invent a task_id.
 
 10. list_calendar_events
 Arguments: {{}}
@@ -757,6 +768,11 @@ RULES:
   - For add_task_to_calendar, pass when/start_time VERBATIM from the user. If
     the user gave no date and no time, pass null — do NOT default to "today"
     or "tomorrow"; the server asks the user what time to schedule.
+- For update_task / complete_task / delete_task:
+  - Copy the task reference VERBATIM from the user's message as task_title.
+    The server resolves it deterministically; NEVER guess a task_id.
+  - Pass task_id only when the live context lists that exact task with its ID
+    and you are certain it is the one the user means.
 - Do not assign a task to a project merely because it is the first
   project in the context.
 - CALENDAR ROUTING (IMPORTANT):
@@ -1046,7 +1062,14 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             if (
                 isinstance(data, dict)
                 and data.get("reply_direct")
-                and tool_name in ("add_task_to_calendar", "remove_task_from_calendar")
+                and tool_name
+                in (
+                    "add_task_to_calendar",
+                    "remove_task_from_calendar",
+                    "update_task",
+                    "complete_task",
+                    "delete_task",
+                )
             ):
                 return data["error"]
 

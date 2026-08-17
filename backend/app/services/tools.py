@@ -57,7 +57,8 @@ class CreateTaskRequest(BaseModel):
 
 
 class UpdateTaskRequest(BaseModel):
-    task_id: int
+    task_id: Optional[int] = None
+    task_title: Optional[str] = None  # user's verbatim reference; resolved server-side
     title: Optional[str] = None
     priority: Optional[str] = None
     task_type: Optional[str] = None
@@ -73,7 +74,8 @@ class UpdateTaskRequest(BaseModel):
 
 
 class CompleteTaskRequest(BaseModel):
-    task_id: int
+    task_id: Optional[int] = None
+    task_title: Optional[str] = None  # user's verbatim reference; resolved server-side
 
 
 class BulkUpdateTasksRequest(BaseModel):
@@ -93,7 +95,8 @@ class BulkUpdateTasksRequest(BaseModel):
 
 
 class DeleteTaskRequest(BaseModel):
-    task_id: int
+    task_id: Optional[int] = None
+    task_title: Optional[str] = None  # user's verbatim reference; resolved server-side
 
 
 class ListCalendarEventsRequest(BaseModel):
@@ -434,6 +437,12 @@ _TASK_REFERENCE_STOPWORDS = frozenset({
     "put", "add", "remove", "link", "unlink", "on", "to", "from", "off",
     "into", "please", "i", "want", "would", "could", "can", "me",
     "this", "that", "it", "these", "those",
+    # Task-management action words, so "update the wiring task priority to
+    # high" resolves to "wiring" rather than "update ... priority ... high".
+    "update", "updating", "delete", "deleting", "complete", "completing",
+    "mark", "marked", "set", "change", "changing", "status", "done",
+    "deadline", "due", "important", "priority", "high", "low", "medium",
+    "critical", "highest", "highestpriority",
     # Scheduling context words — so "…on my calendar tomorrow at 4 PM" does not
     # become part of the task reference when the full message is resolved.
     "at", "tomorrow", "today", "pm", "am", "next", "week", "for",
@@ -442,6 +451,14 @@ _TASK_REFERENCE_STOPWORDS = frozenset({
 
 _TIE_MARGIN = 0.1
 _MIN_MATCH_SCORE = 0.5
+
+_AMBIGUOUS_TASK_QUESTIONS = {
+    "add": "Which one should I add to the calendar?",
+    "remove": "Which one should I remove from the calendar?",
+    "update": "Which one did you mean to update?",
+    "complete": "Which one should I mark complete?",
+    "delete": "Which one should I delete?",
+}
 
 
 def _normalize_task_text(text: str) -> str:
@@ -513,12 +530,17 @@ def resolve_task_for_calendar(
     if not phrase_tokens:
         return {
             "status": "not_found",
+            "had_significant_tokens": False,
             "message": f'I couldn\'t figure out which task you meant by "{task_title}".',
         }
 
     tasks = db.query(Task).order_by(Task.id.asc()).all()
     if not tasks:
-        return {"status": "not_found", "message": "There are no tasks to link yet."}
+        return {
+            "status": "not_found",
+            "had_significant_tokens": True,
+            "message": "There are no tasks to link yet.",
+        }
 
     scored = []
     for task in tasks:
@@ -538,6 +560,7 @@ def resolve_task_for_calendar(
     if top_score < _MIN_MATCH_SCORE:
         return {
             "status": "not_found",
+            "had_significant_tokens": True,
             "message": f'I couldn\'t find a task matching "{task_title}".',
         }
 
@@ -558,11 +581,7 @@ def resolve_task_for_calendar(
         f"{index}. {task.title} — {_calendar_state_label(task)}"
         for index, task in enumerate(candidates, 1)
     )
-    question = (
-        "Which one should I add to the calendar?"
-        if op == "add"
-        else "Which one should I remove from the calendar?"
-    )
+    question = _AMBIGUOUS_TASK_QUESTIONS.get(op, "Which one did you mean?")
     return {
         "status": "ambiguous",
         "message": f'I found multiple tasks matching "{task_title}":\n{listing}\n{question}',
@@ -687,6 +706,7 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
         return {"data": None}
     update_data = req.dict(exclude_unset=True)
     update_data.pop("task_id", None)
+    update_data.pop("task_title", None)
     schedule_on_calendar = update_data.pop("schedule_on_calendar", False)
     when = update_data.pop("when", None)
     start_time = update_data.pop("start_time", None)
