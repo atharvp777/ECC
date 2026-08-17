@@ -33,7 +33,7 @@ CALENDAR_WRITE_TOOLS = {
     "delete_calendar_event",
 }
 
-TASK_TOOLS = {"create_task", "update_task", "complete_task"}
+TASK_TOOLS = {"create_task", "update_task", "complete_task", "bulk_update_tasks", "delete_task"}
 
 # Verbs that mark a task-calendar request as a MOVE/RESCHEDULE (used only to
 # pick the response wording: "Moved …" vs "Added …"). The underlying operation
@@ -170,6 +170,31 @@ def _safe_sync_reason(error_text: str) -> str:
     if any(hint in lower for hint in _WRITE_ACCESS_ERROR_HINTS):
         return error_text
     return "Google Calendar is unavailable right now"
+
+
+def _render_bulk_update_tasks(data) -> str:
+    """Render the bulk update result. Only called after a successful commit —
+    errors (including an empty target set) are returned before any mutation."""
+    count = int(data.get("updated_count", 0) or 0)
+    if count == 0:
+        return "No tasks were updated."
+    applied = data.get("applied") or {}
+    bits = []
+    if applied.get("status"):
+        bits.append(f"marked {applied['status'].lower()}")
+    if applied.get("priority"):
+        bits.append(f"priority set to {applied['priority'].lower()}")
+    if applied.get("deadline"):
+        bits.append("deadline updated")
+    label = "task" if count == 1 else "tasks"
+    detail = f" ({' and '.join(bits)})" if bits else ""
+    return f"Updated {count} {label}{detail}."
+
+
+def _render_task_deleted(data) -> str:
+    """Render a successful task deletion. Only reached when the backend tool
+    actually deleted the row — a missing task never reaches this renderer."""
+    return f"Deleted task {data['deleted_task_id']}."
 
 
 def _render_task_created(data) -> str:
@@ -602,10 +627,36 @@ Arguments:
 Arguments:
 {{"task_id": integer}}
 
-8. list_calendar_events
+8. bulk_update_tasks
+Use when the user wants to update MULTIPLE tasks at once (e.g. "mark all my
+In-SEM tasks done", "complete all overdue tasks", "mark tasks 12, 15, 19
+done"). Choose ONE targeting strategy:
+- explicit ids: the user gave ids ("tasks 12, 15, 19") → task_ids = [12, 15, 19].
+- a scope: the user said ALL/ANY without specific ids →
+  scope = "all_open" (every not-done task) or "overdue" (not-done tasks past
+  their deadline) or "critical" (not-done critical tasks). When the user named
+  a project, pass project_name to scope the selection to that project only.
+Arguments:
+{{"task_ids": [integer, ...] or null,
+  "scope": "all_open | overdue | critical | null",
+  "project_name": "the exact project name the user said, or null",
+  "status": "done | in_progress | blocked | todo | null",
+  "priority": "critical | high | medium | low | null",
+  "deadline_when": "the user's due-date phrase passed VERBATIM, or null"}}
+Never invent task_ids. Never target every task in the database without the
+user's clear intent. When the user says "all my tasks" WITHOUT naming a
+project, use scope="all_open" with project_name=null.
+
+9. delete_task
+Use when the user wants to DELETE/REMOVE a task (not just complete it).
+Arguments:
+{{"task_id": integer — ONLY when the context lists that exact task with its
+  ID, or the user gave the id explicitly. NEVER invent one."}}
+
+10. list_calendar_events
 Arguments: {{}}
 
-9. create_calendar_event
+11. create_calendar_event
 Use ONLY when the user asks to add, schedule, book or get a reminder about a
 real calendar event / appointment on a date. Meetings are NOT events — a
 meeting is a create_task call with task_type="meeting".
@@ -622,7 +673,7 @@ Arguments:
 Do NOT compute start/end yourself. The current date is supplied below and the
 'when' phrase is resolved by the server.
 
-10. update_calendar_event
+12. update_calendar_event
 Use ONLY for a real calendar event (appointment, reminder) that the
 user named. NEVER use for a TASK or a MEETING — a task's calendar event is
 managed with add_task_to_calendar, which keeps the task row in sync.
@@ -634,7 +685,7 @@ Arguments:
   "when": "string or null", "start_time": "string or null",
   "duration_minutes": 60, "timezone": "Asia/Kolkata"}}
 
-11. delete_calendar_event
+13. delete_calendar_event
 Use ONLY for a real calendar event (appointment, reminder) that the
 user named. NEVER use for a TASK or a MEETING — to remove a task from the
 calendar use remove_task_from_calendar.
@@ -643,7 +694,7 @@ Arguments:
               recent calendar listing — never invent one, a task title is never
               an event id)"}}
 
-12. add_task_to_calendar
+14. add_task_to_calendar
 Use when the user asks to put an EXISTING task on the calendar.
 Arguments:
 {{"task_title": "the task reference copied VERBATIM from the user's message —
@@ -662,7 +713,7 @@ NEVER guess a task_id for a task you cannot see listed with its ID.
 Do NOT change the task_title — copy it verbatim from the user's message.
 Do NOT invent a when/date — if the user gave no date or time, pass null.
 
-13. remove_task_from_calendar
+15. remove_task_from_calendar
 Use when the user asks to remove an EXISTING task from the calendar.
 Arguments:
 {{"task_title": "the task reference copied VERBATIM from the user's message —
@@ -688,6 +739,16 @@ RULES:
   - If no project is specified, use null.
   - If no deadline is specified, use null.
   - If no priority is specified, use MEDIUM.
+- For bulk_update_tasks:
+  - When the user gave explicit task ids ("tasks 12, 15, 19"), pass task_ids.
+  - When the user said ALL/ANY WITHOUT specific ids, pass a scope. If the user
+    named a project, ALSO pass project_name so only that project's tasks are
+    touched. Never mutate tasks outside the user's stated scope.
+  - "mark all my tasks done" with no project → scope "all_open",
+    project_name null.
+- For delete_task:
+  - Only target a task whose ID appears in the live context or was given
+    explicitly. Never invent a task_id.
 - For add_task_to_calendar / remove_task_from_calendar:
   - Copy the task_title VERBATIM from the user's message — never paraphrase,
     generalize or shorten it. If the user said "the work on the BAJA wiring
@@ -1029,6 +1090,10 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             "complete_task": lambda: (
                 f"Marked task {data.id} as completed."
             ),
+
+            "bulk_update_tasks": lambda: _render_bulk_update_tasks(data),
+
+            "delete_task": lambda: _render_task_deleted(data),
 
             "list_calendar_events": lambda: (
                 "Calendar events: " + "; ".join(

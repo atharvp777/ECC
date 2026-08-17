@@ -10,6 +10,8 @@ from app.services.tools import (
     create_task as ct,
     update_task as ut,
     complete_task as ct_complete,
+    bulk_update_tasks as but,
+    delete_task as dt,
     list_calendar_events as lce,
     create_calendar_event as cce,
     update_calendar_event as uce,
@@ -29,6 +31,8 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "create_task": ct,
     "update_task": ut,
     "complete_task": ct_complete,
+    "bulk_update_tasks": but,
+    "delete_task": dt,
     "list_calendar_events": lce,
     "create_calendar_event": cce,
     "update_calendar_event": uce,
@@ -45,6 +49,40 @@ def _is_google_event_id_like(value: str) -> bool:
     "QA scheduled task") is never a valid event id.
     """
     return bool(re.fullmatch(r"[A-Za-z0-9_-]+", value))
+
+
+def _resolve_project_name(db: Session, project_name: str) -> tuple:
+    """Resolve a user-provided project name to a project_id.
+
+    Exact match wins, then a case-insensitive match (must be unambiguous).
+    Returns ``(project_id, None)`` on success or ``(None, {"error": ...})``.
+    """
+    if not isinstance(project_name, str) or not project_name.strip():
+        return None, {"error": "project_name must be a non-empty string"}
+
+    trimmed = project_name.strip()
+    normalized = trimmed.lower()
+    project = (
+        db.query(Project)
+        .filter(func.trim(Project.name) == trimmed)
+        .first()
+    )
+
+    if project is None:
+        matches = (
+            db.query(Project)
+            .filter(func.lower(func.trim(Project.name)) == normalized)
+            .all()
+        )
+        if len(matches) == 1:
+            project = matches[0]
+        elif len(matches) > 1:
+            return None, {"error": f'Ambiguous project name: "{project_name}"'}
+
+    if not project:
+        return None, {"error": f'Project not found: "{project_name}"'}
+
+    return project.id, None
 
 
 def execute_tool(
@@ -118,32 +156,18 @@ def execute_tool(
         if tool_name == "create_task":
             project_name = args.pop("project_name", None)
             if project_name is not None:
-                if not isinstance(project_name, str) or not project_name.strip():
-                    return {"data": {"error": "project_name must be a non-empty string"}}
+                project_id, err = _resolve_project_name(db, project_name)
+                if err:
+                    return {"data": err}
+                args["project_id"] = project_id
 
-                trimmed = project_name.strip()
-                normalized = trimmed.lower()
-                project = (
-                    db.query(Project)
-                    .filter(func.trim(Project.name) == trimmed)
-                    .first()
-                )
-
-                if project is None:
-                    matches = (
-                        db.query(Project)
-                        .filter(func.lower(func.trim(Project.name)) == normalized)
-                        .all()
-                    )
-                    if len(matches) == 1:
-                        project = matches[0]
-                    elif len(matches) > 1:
-                        return {"data": {"error": f'Ambiguous project name: "{project_name}"'}}
-
-                if not project:
-                    return {"data": {"error": f'Project not found: "{project_name}"'}}
-
-                args["project_id"] = project.id
+        if tool_name == "bulk_update_tasks":
+            project_name = args.pop("project_name", None)
+            if project_name is not None:
+                project_id, err = _resolve_project_name(db, project_name)
+                if err:
+                    return {"data": err}
+                args["project_id"] = project_id
 
         if tool_name in ("add_task_to_calendar", "remove_task_from_calendar"):
             from app.services.tools import resolve_task_for_calendar
@@ -201,6 +225,8 @@ def execute_tool(
             CreateTaskRequest,
             UpdateTaskRequest,
             CompleteTaskRequest,
+            BulkUpdateTasksRequest,
+            DeleteTaskRequest,
             ListCalendarEventsRequest,
             CreateCalendarEventRequest,
             UpdateCalendarEventRequest,
@@ -217,6 +243,8 @@ def execute_tool(
             "create_task": CreateTaskRequest,
             "update_task": UpdateTaskRequest,
             "complete_task": CompleteTaskRequest,
+            "bulk_update_tasks": BulkUpdateTasksRequest,
+            "delete_task": DeleteTaskRequest,
             "list_calendar_events": ListCalendarEventsRequest,
             "create_calendar_event": CreateCalendarEventRequest,
             "update_calendar_event": UpdateCalendarEventRequest,

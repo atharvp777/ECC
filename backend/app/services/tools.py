@@ -1,10 +1,10 @@
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
-from app.models import Project, Task
+from app.models import Project, Task, TaskStatus, TaskPriority
 from app.models.project import ProjectCategory
 from app.models.task import TaskType
 from app.services.google_calendar import (
@@ -73,6 +73,26 @@ class UpdateTaskRequest(BaseModel):
 
 
 class CompleteTaskRequest(BaseModel):
+    task_id: int
+
+
+class BulkUpdateTasksRequest(BaseModel):
+    """Bulk task mutation request.
+
+    Targets are chosen by explicit ``task_ids`` OR by a ``scope``
+    (``all_open`` / ``overdue`` / ``critical``), optionally narrowed to a
+    single ``project_id``. Every update is validated up-front so a bad id or
+    value aborts the WHOLE operation — no partial mutations.
+    """
+    task_ids: Optional[list[int]] = None
+    project_id: Optional[int] = None
+    scope: Optional[str] = None  # "all_open" | "overdue" | "critical"
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    deadline_when: Optional[str] = None
+
+
+class DeleteTaskRequest(BaseModel):
     task_id: int
 
 
@@ -715,9 +735,175 @@ def complete_task(db: Session, req: CompleteTaskRequest) -> Dict[str, Any]:
     if not task:
         return {"data": None}
     task.status = "DONE"
+    task.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(task)
     return {"data": task}
+
+
+def _normalize_task_status(value) -> Optional[TaskStatus]:
+    """Coerce a status string (name or value, any case) into a TaskStatus member."""
+    if value is None or value == "":
+        return None
+    norm = str(value).strip().lower()
+    for member in TaskStatus:
+        if norm in {member.name.lower(), member.value.lower()}:
+            return member
+    raise ValueError(
+        "Invalid task status. Use one of: todo, in_progress, blocked, done."
+    )
+
+
+def _normalize_task_priority(value) -> Optional[TaskPriority]:
+    """Coerce a priority string (name or value, any case) into a TaskPriority member."""
+    if value is None or value == "":
+        return None
+    norm = str(value).strip().lower()
+    for member in TaskPriority:
+        if norm in {member.name.lower(), member.value.lower()}:
+            return member
+    raise ValueError(
+        "Invalid task priority. Use one of: low, medium, high, critical."
+    )
+
+
+def bulk_update_tasks(db: Session, req: BulkUpdateTasksRequest) -> Dict[str, Any]:
+    """Update many tasks atomically from a scope or explicit id list.
+
+    Safeguards (all validated BEFORE any row is written):
+      * An empty task set never mutates anything.
+      * A missing/invalid task id aborts the whole operation (no partial update).
+      * ``project_id`` scopes the selection and, when combined with explicit
+        ``task_ids``, rejects ids that belong to another project.
+      * Unknown scope / status / priority values fail fast.
+
+    Bulk updates never touch Google Calendar: they only edit task columns
+    (deadline changes do not move the scheduled work-slot event).
+    """
+    # 1. Validate the updates themselves before touching any row.
+    updates = {}
+    try:
+        if req.status is not None:
+            updates["status"] = _normalize_task_status(req.status)
+        if req.priority is not None:
+            updates["priority"] = _normalize_task_priority(req.priority)
+    except ValueError as exc:
+        return {"data": {"error": str(exc)}}
+    deadline = None
+    if req.deadline_when:
+        deadline = resolve_deadline(req.deadline_when)
+    if not updates and deadline is None:
+        return {
+            "data": {
+                "error": "No changes requested — pass status, priority or deadline_when.",
+            }
+        }
+
+    # 2. Resolve the target ids from explicit list or scope.
+    if req.task_ids:
+        ids = list(dict.fromkeys(req.task_ids))
+    elif req.scope:
+        query = db.query(Task.id)
+        if req.project_id is not None:
+            query = query.filter(Task.project_id == req.project_id)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if req.scope == "overdue":
+            query = query.filter(Task.deadline < now, Task.status != TaskStatus.DONE)
+        elif req.scope == "all_open":
+            query = query.filter(Task.status != TaskStatus.DONE)
+        elif req.scope == "critical":
+            query = query.filter(
+                Task.priority == TaskPriority.CRITICAL,
+                Task.status != TaskStatus.DONE,
+            )
+        else:
+            return {
+                "data": {
+                    "error": (
+                        f"Unknown scope '{req.scope}'. "
+                        "Use 'all_open', 'overdue' or 'critical'."
+                    )
+                }
+            }
+        ids = [row[0] for row in query.all()]
+    else:
+        return {
+            "data": {
+                "error": "No tasks targeted — pass task_ids or a scope "
+                "(e.g. 'all_open').",
+            }
+        }
+
+    if not ids:
+        return {"data": {"error": "No tasks matched the requested scope."}}
+
+    # 3. Load targets and verify EVERY id before mutating (atomic).
+    tasks = db.query(Task).filter(Task.id.in_(ids)).all()
+    found = {t.id: t for t in tasks}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        return {
+            "data": {
+                "error": (
+                    f"Task(s) not found: {', '.join(str(i) for i in missing)} "
+                    "— no changes were made."
+                )
+            }
+        }
+    ordered = [found[i] for i in ids]
+
+    if req.project_id is not None:
+        foreign = [t.id for t in ordered if t.project_id != req.project_id]
+        if foreign:
+            return {
+                "data": {
+                    "error": (
+                        f"Task(s) {', '.join(str(i) for i in foreign)} do not belong "
+                        f"to project {req.project_id} — no changes were made."
+                    )
+                }
+            }
+
+    # 4. Apply every update, then a single commit (transactional).
+    now = datetime.now(timezone.utc)
+    for task in ordered:
+        if "status" in updates:
+            was_done = task.status == TaskStatus.DONE
+            task.status = updates["status"]
+            if updates["status"] == TaskStatus.DONE and not was_done:
+                task.completed_at = now
+            elif updates["status"] != TaskStatus.DONE:
+                task.completed_at = None
+        if "priority" in updates:
+            task.priority = updates["priority"]
+        if deadline is not None:
+            task.deadline = deadline
+    db.commit()
+
+    return {
+        "data": {
+            "updated_count": len(ordered),
+            "task_ids": [t.id for t in ordered],
+            "applied": {
+                "status": updates["status"].name if "status" in updates else None,
+                "priority": updates["priority"].name if "priority" in updates else None,
+                "deadline": deadline.isoformat() if deadline else None,
+            },
+        }
+    }
+
+
+def delete_task(db: Session, req: DeleteTaskRequest) -> Dict[str, Any]:
+    """Delete a task row. The linked Google event (if any) is removed
+    best-effort first — a Google failure never blocks task deletion."""
+    task = db.query(Task).filter(Task.id == req.task_id).first()
+    if not task:
+        return {"data": None}
+    from app.services.task_calendar_sync import delete_event_best_effort
+    delete_event_best_effort(task)
+    db.delete(task)
+    db.commit()
+    return {"data": {"deleted_task_id": req.task_id}}
 
 
 def list_calendar_events(db: Session, req: ListCalendarEventsRequest) -> Dict[str, Any]:
