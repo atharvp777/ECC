@@ -237,7 +237,9 @@ Your personality:
 - Use bullet points for lists, plain prose for explanations.
 - You know about: eBAJA, Formula SAE EV rules, mechanical engineering, Python, software development.
 
-When asked about tasks/projects, reference the actual data provided. Never make up task names or project details."""
+When asked about tasks/projects, reference the actual data provided. Never make up task names or project details.
+
+Actions: the backend tool layer can create, update and complete tasks, create/update projects, and manage Google Calendar events. When the user asks for one of these actions the tool layer executes it and hands you the real result — never refuse an action request on the grounds that you cannot mutate data. But never claim an action was performed unless a tool result in the context confirms it; if no tool actually ran, say you could not execute it."""
 
 
 def _friendly_ai_error_message(exc: Exception) -> str:
@@ -282,9 +284,16 @@ def _build_context(db: Session) -> str:
         for p in projects:
             task_count = len(p.tasks)
             done = sum(1 for t in p.tasks if t.status == "DONE")
+            desc = f" | Description: {p.description}" if p.description else ""
+            doc_part = ""
+            if p.documents:
+                doc_names = ", ".join(
+                    d.title or d.original_filename for d in p.documents
+                )
+                doc_part = f" | Documents: {doc_names}"
             lines.append(
                 f"- ID: {p.id} | Name: **{p.name}** | Category: {p.category} "
-                f"| Progress: {done}/{task_count} tasks done"
+                f"| Progress: {done}/{task_count} tasks done{desc}{doc_part}"
             )
         lines.append("")
 
@@ -301,7 +310,7 @@ def _build_context(db: Session) -> str:
             deadline = t.deadline.replace(tzinfo=timezone.utc)
             days = (now - deadline).days
             proj = t.project.name if t.project else "No project"
-            lines.append(f"- [{t.priority.upper()}] {t.title} — {days}d overdue ({proj})")
+            lines.append(f"- [ID: {t.id}] [{t.priority.upper()}] {t.title} — {days}d overdue ({proj})")
         lines.append("")
 
     week_end = now_naive + timedelta(days=7)
@@ -317,7 +326,7 @@ def _build_context(db: Session) -> str:
         for t in upcoming:
             dl = t.deadline.strftime("%b %d")
             proj = t.project.name if t.project else "Personal"
-            lines.append(f"- [{t.priority.upper()}] {t.title} — due {dl} ({proj})")
+            lines.append(f"- [ID: {t.id}] [{t.priority.upper()}] {t.title} — due {dl} ({proj})")
         lines.append("")
 
     critical = (
@@ -329,7 +338,7 @@ def _build_context(db: Session) -> str:
     if critical:
         lines.append("## Critical Open Tasks")
         for t in critical:
-            lines.append(f"- {t.title}" + (f" — due {t.deadline.strftime('%b %d')}" if t.deadline else ""))
+            lines.append(f"- [ID: {t.id}] {t.title}" + (f" — due {t.deadline.strftime('%b %d')}" if t.deadline else ""))
         lines.append("")
 
     notes = db.query(Note).order_by(Note.updated_at.desc()).limit(5).all()
@@ -357,18 +366,150 @@ def _build_context(db: Session) -> str:
 
 
 def _maybe_rag(user_message: str) -> Optional[str]:
-    triggers = [
-        "/doc", "rulebook", "datasheet", "according to the", "in the document",
-        "specification", "what does the", "fmea", "regulation", "requirement",
-        "clause", "section", "page", "standard"
-    ]
-    lower = user_message.lower()
-    if any(t in lower for t in triggers):
-        from app.services.knowledge_service import answer_from_docs
-        result = answer_from_docs(user_message.replace("/doc", "").strip())
-        if result["sources"]:
-            return f"{result['answer']}\n\n*Sources: {', '.join(result['sources'])}*"
+    """Legacy global-knowledge RAG hook. No longer used — document-aware chat
+    context is built by ``_project_document_context`` which scopes to the
+    project the user is asking about and extracts text on demand.
+    """
     return None
+
+
+# ----------------------------------------------------------------------
+# Project document context for AI Chat (on-demand, project-scoped)
+# ----------------------------------------------------------------------
+_MAX_DOC_TEXT_PER_DOC = 5000
+_MAX_DOC_TEXT_TOTAL = 12000
+
+# Wording that asks about a document's CONTENT (as opposed to merely listing
+# which documents exist — those are answered from the metadata in
+# ``_build_context``).
+_DOCUMENT_CONTENT_HINTS = (
+    "syllabus", "document", "pdf", "summar", "subject", "exam", "contain",
+    "content", "read", "chapter", "topic", "marking", "scheme", "curriculum",
+    "unit", "what does", "explain", "describe", "overview", "cover",
+    "about the", "what's in", "whats in",
+)
+
+# Wording that only asks to LIST documents — no text extraction needed.
+_DOCUMENT_LISTING_HINTS = (
+    "what documents", "any documents", "documents in", "list documents",
+    "which document", "what files", "any files", "documents attached",
+    "document in my", "files in my",
+)
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase alphanumerics only, so 'In-SEM', 'in sem' and 'insem'
+    all normalize to the same key."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _token_set_for_match(text: str) -> set:
+    return set(re.findall(r"[a-z0-9]{2,}", text.lower()))
+
+
+def _wants_document_content(text: str) -> bool:
+    """True when the latest user turn asks about document contents.
+
+    Pure listing questions ("what documents are in my X project?") are
+    answered from the metadata already present in ``_build_context`` and never
+    trigger text extraction.
+    """
+    lower = (text or "").lower()
+    if any(h in lower for h in _DOCUMENT_LISTING_HINTS):
+        return False
+    return any(h in lower for h in _DOCUMENT_CONTENT_HINTS)
+
+
+def _identify_document_project(db: Session, text: str) -> Optional[object]:
+    """Best-match a project from free-form user wording.
+
+    Handles "my insem project", "In-SEM", "in sem", a document name such as
+    "BE SEM 1 Syllabus", and loose variants like "the semester project". The
+    whole conversation is scanned so follow-ups ("what is this document
+    about?") still resolve to the project named in an earlier turn.
+    """
+    from app.models.project import Project
+
+    norm_text = _normalize_for_match(text)
+    text_tokens = _token_set_for_match(text)
+
+    best = None
+    best_score = 0.0
+    for proj in db.query(Project).all():
+        name_norm = _normalize_for_match(proj.name)
+        score = 0.0
+        # Exact normalized name hit: "insem" ⊂ "what's the document in my insem project"
+        if name_norm and name_norm in norm_text:
+            score += 10.0
+        proj_tokens = _token_set_for_match(f"{proj.name} {proj.description or ''}")
+        score += len(text_tokens & proj_tokens) * 3.0
+        # Short project tokens that are substrings of user words ("sem" ⊆ "semester").
+        for tok in text_tokens:
+            if len(tok) < 4:
+                continue
+            if any(len(pt) >= 3 and pt in tok for pt in proj_tokens):
+                score += 1.0
+        # Overlap with this project's document names.
+        doc_names = " ".join(d.title or d.original_filename for d in proj.documents)
+        score += len(text_tokens & _token_set_for_match(doc_names)) * 2.0
+        if score > best_score:
+            best_score = score
+            best = proj
+
+    return best if best_score > 0 else None
+
+
+def _project_document_context(db: Session, messages: List[dict]) -> str:
+    """Extract the relevant project document text for the chat fallback prompt.
+
+    Returns an empty string when the user is not asking about document
+    contents, when no project can be identified, or when the project has no
+    documents. The payload is bounded so full document contents are never sent
+    on every request. Missing files and unsupported formats are handled
+    gracefully (the document is skipped with a note).
+    """
+    if not messages:
+        return ""
+
+    # The listing-vs-content decision uses only the latest user turn; project
+    # identification scans the whole conversation so follow-ups resolve.
+    last_user = next(
+        (m["content"] for m in reversed(messages) if m["role"] == "user"),
+        "",
+    )
+    if not _wants_document_content(last_user):
+        return ""
+
+    convo = "\n".join(m.get("content", "") for m in messages if m.get("content"))
+    project = _identify_document_project(db, convo)
+    if project is None or not project.documents:
+        return ""
+
+    from app.services.knowledge_service import extract_text_from_file
+
+    blocks = []
+    total = 0
+    for doc in project.documents:
+        text = extract_text_from_file(doc.file_path, doc.mime_type)
+        label = doc.title or doc.original_filename
+        if not text.strip() or text.startswith("["):
+            blocks.append(f"Document: {label} (text could not be extracted)")
+            continue
+        clipped = text.strip()[:_MAX_DOC_TEXT_PER_DOC]
+        total += len(clipped)
+        blocks.append(f"Document: {label}\n{clipped}")
+        if total >= _MAX_DOC_TEXT_TOTAL:
+            break
+
+    if not blocks:
+        return ""
+
+    return (
+        f"\n--- PROJECT DOCUMENT CONTENTS ({project.name}) ---\n"
+        "Use the text below to answer questions about these documents.\n\n"
+        + "\n\n".join(blocks)
+        + "\n--- END PROJECT DOCUMENT CONTENTS ---\n"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -965,8 +1106,9 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         return ai_provider_configured_message()
 
     try:
+        doc_context = _project_document_context(db, messages)
         content = complete_text(
-            system=SYSTEM_PROMPT + context,
+            system=SYSTEM_PROMPT + context + doc_context,
             messages=messages,
             max_tokens=1024,
             temperature=0.7,

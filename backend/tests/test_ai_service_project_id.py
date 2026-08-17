@@ -42,6 +42,14 @@ def test_build_context_includes_project_id(db_session):
     assert "BAJA HV" in ctx
 
 
+def test_build_context_includes_task_ids(db_session):
+    """Task listings must expose IDs so the planner can target tasks by ID
+    (enables update_task / complete_task from natural language)."""
+    ctx = _build_context(db_session)
+    assert "ID: 1" in ctx
+    assert "Design chassis" in ctx
+
+
 def test_plan_tool_call_resolves_project_id(db_session):
     """The planner should surface project_name, not invent project IDs."""
     ctx = _build_context(db_session)
