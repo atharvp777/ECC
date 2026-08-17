@@ -3,8 +3,9 @@ import {
   getIntegrationStatus, getGoogleEvents, disconnectGoogle,
 } from "../api";
 import { Calendar, Check, X, ExternalLink, RefreshCw } from "lucide-react";
+import { API_BASE_URL } from "../config";
 
-const BASE = "http://localhost:8000";
+const BASE = API_BASE_URL;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function StatusBadge({ ok }) {

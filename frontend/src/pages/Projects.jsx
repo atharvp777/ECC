@@ -66,13 +66,14 @@ function ProjectForm({ onSave, onClose }) {
 }
 
 export default function Projects() {
-  const [projects, setProjects] = useState([]);
+const [projects, setProjects] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const navigate = useNavigate();
 
   const load = async () => {
-    try { setProjects(await getProjects()); } catch {}
+    try { setProjects(await getProjects()); setLoadError(false); } catch { setLoadError(true); }
     finally { setLoading(false); }
   };
 
@@ -95,6 +96,14 @@ export default function Projects() {
           <Plus size={14} /> New Project
         </button>
       </div>
+
+{loadError && (
+        <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)", textAlign: "center" }}>
+          <p style={{ color: "var(--warning)", fontSize: 13 }}>
+            ⚠ Couldn't load projects. Check the backend connection.
+          </p>
+        </div>
+      )}
 
       {projects.length === 0
         ? (

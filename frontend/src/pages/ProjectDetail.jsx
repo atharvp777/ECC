@@ -32,6 +32,7 @@ export default function ProjectDetail() {
   const [docs, setDocs] = useState([]);
   const [tab, setTab] = useState("overview");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const [uploading, setUploading] = useState(false);
   const inputRef = useRef();
@@ -42,7 +43,10 @@ export default function ProjectDetail() {
       setProject(p);
       const [t, d] = await Promise.all([getTasks({ project_id: id }), getDocuments({ project_id: id })]);
       setTasks(t); setDocs(d);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
     finally { setLoading(false); }
   };
 
@@ -79,6 +83,7 @@ export default function ProjectDetail() {
   };
 
   if (loading) return <div className="spinner" />;
+  if (loadError) return <div className="empty"><p>⚠ Couldn't load this project. Check the backend connection.</p></div>;
   if (!project) return <div className="empty"><p>Project not found.</p></div>;
 
   const pct = project.task_count ? Math.round((project.done_tasks || 0) / project.task_count * 100) : 0;

@@ -5,16 +5,20 @@ import { Plus, Trash2, FileText } from "lucide-react";
 export default function Notes() {
   const [notes, setNotes]       = useState([]);
   const [projects, setProjects] = useState([]);
-  const [active, setActive]     = useState(null);
+const [active, setActive]     = useState(null);
   const [saving, setSaving]     = useState(false);
   const [timer, setTimer]       = useState(null);
+  const [loadError, setLoadError] = useState(false);
 
   const load = async () => {
     try {
       const [n, p] = await Promise.all([getNotes(), getProjects()]);
       setNotes(n); setProjects(p);
       if (n.length && !active) setActive(n[0]);
-    } catch {}
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   };
 
   useEffect(() => { load(); }, []);
@@ -70,10 +74,10 @@ export default function Notes() {
               </div>
             </div>
           ))}
-          {notes.length === 0 && (
+{notes.length === 0 && (
             <div className="empty" style={{ padding: 24 }}>
               <FileText size={24} style={{ margin: "0 auto 8px", display: "block", opacity: .3 }} />
-              <p style={{ fontSize: 12 }}>No notes yet</p>
+              <p style={{ fontSize: 12 }}>{loadError ? "Couldn't load notes — is the backend running?" : "No notes yet"}</p>
             </div>
           )}
         </div>

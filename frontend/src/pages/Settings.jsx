@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
+import { API_BASE_URL } from "../config";
 
 export default function Settings() {
   const [aiStatus, setAiStatus] = useState(null);
 
   useEffect(() => {
-    fetch("http://127.0.0.1:8000/api/chat/status")
+    fetch(`${API_BASE_URL}/api/chat/status`)
       .then((r) => (r.ok ? r.json() : null))
       .then(setAiStatus)
       .catch(() => setAiStatus(null));
@@ -16,7 +17,7 @@ export default function Settings() {
       <div className="card" style={{ maxWidth: 480 }}>
         <div className="form-group">
           <label className="form-label">Backend URL</label>
-          <input className="form-input" defaultValue="http://127.0.0.1:8000" disabled />
+          <input className="form-input" defaultValue={API_BASE_URL} disabled />
           <p style={{ color: "var(--muted)", fontSize: 12, marginTop: 7 }}>
             The desktop app connects to this local service. Provider keys remain in the backend .env file and are never entered in the UI.
           </p>
