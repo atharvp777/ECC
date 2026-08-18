@@ -232,8 +232,8 @@ const handleDelete = async (id) => {
             {tasks.map(task => {
               const overdue = task.deadline && new Date(task.deadline) < new Date() && task.status !== "done";
               return (
-                <div className="task-item" key={task.id}>
-                  <button className={`task-check ${task.status === "done" ? "done" : ""}`} onClick={() => toggleDone(task)}>
+<div className="task-item" key={task.id}>
+                  <button className={`task-check ${task.status === "done" ? "done" : ""}`} onClick={() => toggleDone(task)} aria-label={task.status === "done" ? `Reopen ${task.title}` : `Complete ${task.title}`}>
                     {task.status === "done" && <Check size={10} />}
                   </button>
                   <div className="task-body">
@@ -263,7 +263,7 @@ const handleDelete = async (id) => {
                       : (
                         <button className="btn btn-ghost btn-sm" title="Add to Google Calendar" onClick={() => openCalModal(task)}><CalendarPlus size={12} /></button>
                       )}
-                    <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(task.id)}><Trash2 size={12} /></button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(task.id)} aria-label={`Delete ${task.title}`}><Trash2 size={12} /></button>
                   </div>
                 </div>
               );

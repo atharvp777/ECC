@@ -260,7 +260,7 @@ const [reingesting, setReingesting] = useState(null);
                 <a className="btn btn-ghost btn-sm" title="Download original" href={getDocumentDownloadUrl(doc.id)}>
                   <Download size={12} />
                 </a>
-                <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(doc.id)}><Trash2 size={12} /></button>
+                <button className="btn btn-ghost btn-sm" onClick={() => handleDelete(doc.id)} aria-label={`Delete ${doc.title || doc.original_filename}`}><Trash2 size={12} /></button>
               </div>
             </div>
           );
