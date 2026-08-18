@@ -55,9 +55,19 @@ _CALENDAR_EVENTS_LOOKAHEAD_DAYS = 1
 _MAX_PROJECT_DEADLINES = 20
 
 
-def get_today_overview(db: Session) -> TodayOverview:
-    """Build the deterministic Today Overview for the current IST calendar day."""
-    now = normalize_to_system(datetime.now(timezone.utc))
+def get_today_overview(
+    db: Session,
+    now: datetime | None = None,
+) -> TodayOverview:
+    """Build the deterministic Today Overview for the current IST calendar day.
+
+    ``now`` is the reference wall-clock instant (defaults to the real clock).
+    It is used by the day-plan approval layer to rebuild the plan at the exact
+    moment it was last presented — free windows start at ``now``, so comparing
+    two plans generated at different wall-clock times must use the same anchor
+    or an unchanged plan would look "changed" every time.
+    """
+    now = normalize_to_system(now if now is not None else datetime.now(timezone.utc))
     start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start_of_tomorrow = start_of_today + timedelta(days=1)
     week_end = now + timedelta(days=_UPCOMING_DAYS)

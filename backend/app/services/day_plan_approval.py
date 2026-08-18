@@ -11,10 +11,14 @@ This module owns the explicit scheduling action:
 1. Backend authorization gate (``is_scheduling_authorization``). Confirmation
    must come from the user's real conversational intent; it is independently
    enforced here, never left to the LLM prompt alone.
-2. Freshness. The plan is always regenerated from authoritative database +
-   calendar state and compared (by deterministic signature) against the plan
-   that was last presented. A stale approval is never scheduled silently —
-   the fresh plan is returned for re-confirmation instead.
+ 2. Freshness. The plan is always regenerated from authoritative database +
+    calendar state and compared (by deterministic signature) against the plan
+    that was last presented. Because block times are anchored to the moment
+    the plan was generated, the comparison rebuilds the plan at that SAME
+    anchor — so a few minutes of wall-clock drift alone never looks like a
+    change, while any real data change (task, estimate, calendar busy time)
+    does. A stale approval is never scheduled silently — the fresh plan is
+    returned for re-confirmation instead.
 3. Per-block validation against the fresh plan and the current calendar
    snapshot (task exists / not done / duration matches / still inside its
    free window).
@@ -33,9 +37,10 @@ and the existing task-calendar event body conventions — no second abstraction.
 
 import hashlib
 import re
+from datetime import datetime
 from typing import Dict, List, Optional
 
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.core.timeutil import SYSTEM_TIMEZONE, normalize_to_system
 from app.models.task import Task, TaskStatus
@@ -46,6 +51,7 @@ from app.schemas.day_plan import (
     DayPlanApprovalResult,
 )
 from app.services import google_calendar
+from app.services.task_calendar_sync import unlink_event as tcs_unlink_event
 
 
 # ----------------------------------------------------------------------
@@ -136,15 +142,24 @@ def is_scheduling_authorization(
 # Lightweight, in-process fingerprint of the plan that is currently on the
 # table. This is tool context, not a persistence system: it lets the backend
 # decide whether an approval still refers to the plan the user actually saw.
+#
+# A DayPlan's blocks are anchored to the overview's `generated_at` (free
+# windows start at "now"), so two regenerations at different wall-clock times
+# produce identical block lists only when NOTHING about the underlying data
+# changed. Freshness is therefore checked by REBUILDING the plan at the
+# original `generated_at` (see apply_approved_plan) — that is what makes the
+# signature comparison meaningful across separate plan_my_day / apply_day_plan
+# requests, which the real clock always separates.
 
-_last_presented_signatures: Dict[str, str] = {}
+_last_presented_signatures: Dict[str, Dict] = {}
 
 
 def plan_signature(day_plan: DayPlan) -> str:
     """Deterministic fingerprint of a DayPlan's scheduled content.
 
     Only the date and the actual blocks (task, start, end, duration) matter —
-    unscheduled reasons, summaries and presentation text do not.
+    unscheduled reasons, summaries and presentation text do not. The signature
+    is only compared between plans generated at the SAME wall-clock anchor.
     """
     blocks = sorted(
         (
@@ -163,15 +178,29 @@ def plan_signature(day_plan: DayPlan) -> str:
 
 
 def remember_presented_plan(day_plan: DayPlan) -> str:
-    """Record the plan the user was just shown; returns its signature."""
+    """Record the plan the user was just shown; returns its signature.
+
+    Also keeps the plan's ``generated_at`` so a later approval can rebuild the
+    plan at the same wall-clock anchor before comparing signatures.
+    """
     signature = plan_signature(day_plan)
-    _last_presented_signatures[day_plan.date] = signature
+    _last_presented_signatures[day_plan.date] = {
+        "signature": signature,
+        "generated_at": day_plan.generated_at,
+    }
     return signature
 
 
 def presented_signature(plan_date: str) -> Optional[str]:
     """The signature of the plan last presented for ``plan_date`` (if any)."""
-    return _last_presented_signatures.get(plan_date)
+    entry = _last_presented_signatures.get(plan_date)
+    return entry["signature"] if entry else None
+
+
+def presented_generated_at(plan_date: str) -> Optional[datetime]:
+    """The wall-clock anchor of the plan last presented for ``plan_date``."""
+    entry = _last_presented_signatures.get(plan_date)
+    return entry["generated_at"] if entry else None
 
 
 def clear_presented_plan(plan_date: str) -> None:
@@ -227,25 +256,19 @@ def _compensate(db: Session, created_events: List) -> Dict:
     """Best-effort rollback of events created by the current operation.
 
     Only events created here are deleted; pre-existing calendar events are
-    never touched. When a deletion fails the task keeps its link and the
-    failure is recorded so it can be recovered.
+    never touched. Reuses the shared task-calendar unlink helper (same
+    field-clearing and failure semantics as the rest of the app). When a
+    deletion fails the task keeps its link and the failure is recorded so it
+    can be recovered.
     """
     cleaned: List[int] = []
     failures: List[Dict] = []
-    for event_id, task in created_events:
-        try:
-            google_calendar.delete_calendar_event(event_id)
-        except Exception as exc:
-            task.calendar_sync_error = f"compensation cleanup failed: {_safe_error(exc)}"
-            db.commit()
-            failures.append({"task_id": task.id, "error": task.calendar_sync_error})
-            continue
-        task.google_calendar_event_id = None
-        task.scheduled_start = None
-        task.scheduled_end = None
-        task.calendar_sync_error = None
-        db.commit()
-        cleaned.append(task.id)
+    for _event_id, task in created_events:
+        result = tcs_unlink_event(db, task)
+        if result.get("error"):
+            failures.append({"task_id": task.id, "error": result["error"]})
+        else:
+            cleaned.append(task.id)
     return {"cleaned_task_ids": cleaned, "cleanup_failures": failures}
 
 
@@ -258,6 +281,20 @@ def _outcome(block: ScheduledBlock, status: str, reason: str = None, event_id: s
         status=status,
         reason=reason,
         event_id=event_id,
+    )
+
+
+def _plan_changed_result(plan_date: str, fresh_plan: DayPlan) -> DayPlanApprovalResult:
+    """Stale approval: never schedule silently — present the refreshed plan."""
+    return DayPlanApprovalResult(
+        plan_date=plan_date,
+        status="plan_changed",
+        plan_changed=True,
+        fresh_plan=fresh_plan,
+        message=(
+            "Your schedule has changed since I generated that plan. I "
+            "refreshed it — here's the updated plan. Schedule this one?"
+        ),
     )
 
 
@@ -278,31 +315,27 @@ def apply_approved_plan(db: Session, plan_date: str) -> DayPlanApprovalResult:
     fresh_plan = build_day_plan(overview)
 
     # 2. Freshness: the approval must match the plan currently on the table.
-    remembered = presented_signature(plan_date)
-    if remembered is None or plan_signature(fresh_plan) != remembered:
+    # Block times are anchored to the moment a plan is generated (free windows
+    # start at "now"), so a regeneration at a LATER wall-clock instant would
+    # differ even when nothing changed. Rebuild the plan at the exact
+    # `generated_at` the user saw and compare THAT — a few minutes of drift
+    # never looks like a change, but a real data change always does.
+    presented_at = presented_generated_at(plan_date)
+    if presented_at is None:
         remember_presented_plan(fresh_plan)
-        return DayPlanApprovalResult(
-            plan_date=plan_date,
-            status="plan_changed",
-            plan_changed=True,
-            fresh_plan=fresh_plan,
-            message=(
-                "Your schedule has changed since I generated that plan. I "
-                "refreshed it — here's the updated plan. Schedule this one?"
-            ),
-        )
+        return _plan_changed_result(plan_date, fresh_plan)
+    anchored_overview = build_today_overview(db, now=presented_at)
+    anchored_plan = build_day_plan(anchored_overview)
+    if plan_signature(anchored_plan) != presented_signature(plan_date):
+        remember_presented_plan(fresh_plan)
+        return _plan_changed_result(plan_date, fresh_plan)
 
     # 3. Validate every block and create events.
     outcomes: List[ScheduledBlockOutcome] = []
     created_events: List = []
 
     for block in fresh_plan.scheduled_blocks:
-        task = (
-            db.query(Task)
-            .options(joinedload(Task.project))
-            .filter(Task.id == block.task_id)
-            .first()
-        )
+        task = db.get(Task, block.task_id)
         if task is None:
             outcomes.append(_outcome(block, "skipped", "task no longer exists"))
             continue

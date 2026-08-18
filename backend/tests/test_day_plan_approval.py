@@ -245,6 +245,42 @@ def test_apply_day_plan_bare_okay_without_confirmation_question_does_not_write(d
     assert plan_env.created == []
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["sure", "sounds good", "do it", "go ahead", "yes", "yep", "ok"],
+)
+def test_bare_affirmation_without_confirmation_question_does_not_write(db_session, plan_env, message):
+    """A bare acknowledgement is NOT authorization unless the assistant's last
+    reply explicitly asked for confirmation to schedule."""
+    _task(db_session, "PCB schematic", estimated_minutes=90)
+    _plan(db_session)
+
+    result = _apply(
+        db_session,
+        message=message,
+        last_assistant="Here is your recommended schedule for today.",
+    )
+
+    assert isinstance(result, dict)
+    assert "confirm" in result["error"].lower()
+    assert plan_env.created == []
+
+
+def test_yes_after_confirmation_question_writes(db_session, plan_env):
+    _task(db_session, "PCB schematic", estimated_minutes=90)
+    _plan(db_session)
+
+    result = _apply(
+        db_session,
+        message="yes",
+        last_assistant="Do you want me to add this plan to your Google Calendar?",
+    )
+
+    assert isinstance(result, DayPlanApprovalResult)
+    assert result.status == "scheduled"
+    assert len(plan_env.created) == 1
+
+
 def test_apply_day_plan_blank_message_rejected(db_session, plan_env):
     _task(db_session, "PCB schematic", estimated_minutes=90)
     _plan(db_session)
@@ -351,6 +387,55 @@ def test_apply_without_remembered_plan_is_refreshed(db_session, plan_env):
     assert plan_env.created == []
     db_session.refresh(task)
     assert task.google_calendar_event_id is None
+
+
+def test_time_drift_between_plan_and_apply_does_not_loop(db_session, plan_env, monkeypatch):
+    """A plan approved minutes after it was generated must schedule.
+
+    Block times are anchored to the moment a plan is generated (free windows
+    start at 'now'), so without a fixed comparison anchor ANY wall-clock drift
+    between plan_my_day and apply_day_plan would look like a changed plan and
+    the approval would never schedule. This locks in the anchored-rebuild
+    freshness comparison against the real-clock behavior.
+    """
+
+    class FakeClockDatetime:
+        clock = {"t": NOW}
+
+        @staticmethod
+        def now(tz=None):
+            return FakeClockDatetime.clock["t"]
+
+        @staticmethod
+        def fromisoformat(value):
+            return datetime.fromisoformat(value)
+
+        @staticmethod
+        def strptime(value, fmt):
+            return datetime.strptime(value, fmt)
+
+        max = datetime.max
+
+    def normalize_to_clock(dt):
+        if dt is None:
+            return None
+        return dt if dt.tzinfo else dt.replace(tzinfo=IST)
+
+    monkeypatch.setattr(planning_service, "datetime", FakeClockDatetime)
+    monkeypatch.setattr(planning_service, "normalize_to_system", normalize_to_clock)
+
+    task = _task(db_session, "PCB schematic", estimated_minutes=90)
+    _plan(db_session)
+    FakeClockDatetime.clock["t"] = FakeClockDatetime.clock["t"] + timedelta(minutes=4)
+
+    result = _apply(db_session, message="Schedule it.")
+
+    assert isinstance(result, DayPlanApprovalResult)
+    assert result.status == "scheduled"
+    assert len(plan_env.created) == 1
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == plan_env.created[0]["id"]
+    assert task.status == TaskStatus.TODO
 
 
 # ----------------------------------------------------------------------
@@ -550,6 +635,47 @@ def test_partial_failure_compensates_created_events(db_session, plan_env):
     assert b.status == TaskStatus.TODO
 
 
+def test_partial_failure_cleanup_failure_is_surfaced(db_session, plan_env):
+    """When compensation itself fails, the task keeps its link, the failure is
+    recorded on the task, and cleanup_failed_task_ids is returned so the
+    renderer can surface it."""
+    a = _task(db_session, "PCB schematic", estimated_minutes=90)
+    _task(db_session, "Wiring harness", estimated_minutes=90)
+    _plan(db_session)
+
+    calls = {"n": 0}
+
+    def fail_second(body):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("Google API exploded")
+        event_id = f"evt_{calls['n']}"
+        plan_env.created.append({"id": event_id, "body": body})
+        return {
+            "id": event_id,
+            "summary": body.get("summary"),
+            "start": body.get("start"),
+            "end": body.get("end"),
+            "status": "confirmed",
+        }
+
+    def delete_fails(event_id):
+        raise RuntimeError("delete exploded")
+
+    with patch.object(google_calendar, "create_calendar_event", fail_second), \
+         patch.object(google_calendar, "delete_calendar_event", delete_fails):
+        result = _apply(db_session, message="Schedule it.")
+
+    assert result.status == "failed"
+    assert result.cleanup_failed_task_ids == [a.id]
+    db_session.refresh(a)
+    # The event still exists (cleanup failed) so the task keeps its link and
+    # the failure is recorded for retry.
+    assert a.google_calendar_event_id == plan_env.created[0]["id"]
+    assert a.calendar_sync_error is not None
+    assert a.status == TaskStatus.TODO
+
+
 # ----------------------------------------------------------------------
 # Security: task titles are DATA, never instructions
 # ----------------------------------------------------------------------
@@ -727,6 +853,29 @@ def test_chat_about_tomorrow_does_not_schedule(db_session, plan_env):
 
     assert "confirm" in reply.lower()
     assert plan_env.created == []
+
+
+def test_tool_directive_apply_day_plan_is_explicit_authorization(db_session, plan_env):
+    """A /tool apply_day_plan directive is the user literally invoking the
+    mutation — the server treats it as explicit authorization, no conversational
+    gate needed."""
+    task = _task(db_session, "PCB schematic", estimated_minutes=90)
+
+    with patch.object(ai_service, "plan_tool_call", return_value={"tool": "plan_my_day", "args": {}}), \
+         patch.object(ai_service, "complete_text", return_value="Here is your recommended schedule."):
+        chat_with_ai([{"role": "user", "content": "Plan my day."}], db_session)
+    assert plan_env.created == []
+
+    reply = chat_with_ai(
+        [{"role": "user", "content": f'/tool apply_day_plan {{"date": "{TODAY}"}}'}],
+        db_session,
+    )
+
+    assert "Added these blocks" in reply
+    assert len(plan_env.created) == 1
+    db_session.refresh(task)
+    assert task.google_calendar_event_id == plan_env.created[0]["id"]
+    assert task.status == TaskStatus.TODO
 
 
 def _free_window(start, end):
