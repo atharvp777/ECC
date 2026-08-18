@@ -1,5 +1,5 @@
 @echo off
-echo Starting Engineering Command Center Backend...
+echo Starting Orbit Backend...
 cd /d "%~dp0"
 
 REM Create venv if it doesn't exist

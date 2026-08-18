@@ -53,7 +53,7 @@ export default function Sidebar() {
       <div className="sidebar-logo">
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Zap size={16} color="var(--accent)" />
-          <h1>Command Center</h1>
+          <h1>Orbit</h1>
         </div>
       </div>
 

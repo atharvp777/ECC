@@ -79,12 +79,12 @@ if ($Stop) {
     Stop-ProcessFromPidFile $pidFile
 
     Write-Host ""
-    Write-Host "Engineering Command Center stopped." -ForegroundColor Yellow
+    Write-Host "Orbit stopped." -ForegroundColor Yellow
     exit 0
 }
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host " Starting Engineering Command Center..." -ForegroundColor Green
+Write-Host " Starting Orbit..." -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 
 # --------------------------------------------------
@@ -189,7 +189,7 @@ Start-Process -FilePath $desktopApp
 
 Write-Host ""
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host " Engineering Command Center is READY!" -ForegroundColor Green
+Write-Host " Orbit is READY!" -ForegroundColor Green
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Desktop app launched." -ForegroundColor White

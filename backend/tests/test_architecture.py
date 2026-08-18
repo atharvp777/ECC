@@ -1,6 +1,6 @@
 """Architecture cleanup tests.
 
-The Engineering Command Center model is:
+The Orbit model is:
 
     Category → Project → (Tasks, Documents)
     Task → optional Google Calendar event  (task_type: work | reminder | meeting)

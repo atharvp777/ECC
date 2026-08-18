@@ -1160,7 +1160,7 @@ def add_task_to_calendar(db: Session, req: AddTaskToCalendarRequest) -> Dict[str
 
 
 def remove_task_from_calendar(db: Session, req: RemoveTaskFromCalendarRequest) -> Dict[str, Any]:
-    """Unlink an existing task from Google Calendar; the ECC task is kept."""
+    """Unlink an existing task from Google Calendar; the Orbit task is kept."""
     task = db.query(Task).filter(Task.id == req.task_id).first()
     if not task:
         return {"data": {"error": f"Task not found: {req.task_id}"}}

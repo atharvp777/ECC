@@ -283,7 +283,7 @@ def link_task_to_calendar(task_id: int, payload: TaskCalendarRequest, db: Sessio
 
 @router.delete("/{task_id}/calendar", response_model=TaskRead)
 def unlink_task_from_calendar(task_id: int, db: Session = Depends(get_db)):
-    """Remove the linked Google event but keep the ECC task."""
+    """Remove the linked Google event but keep the Orbit task."""
     task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")

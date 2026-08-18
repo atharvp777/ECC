@@ -260,7 +260,7 @@ def test_remove_task_from_calendar_unlinks_but_keeps_task(db_session):
     assert result["data"].google_calendar_event_id is None
     assert result["data"].scheduled_start is None
     assert result["data"].calendar_sync_error is None
-    # The ECC task still exists.
+    # The Orbit task still exists.
     assert db_session.query(Task).filter(Task.id == task.id).first() is not None
 
 

@@ -202,7 +202,7 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
 
     The listing window begins at 00:00 of the current LOCAL day (UTC+05:30) so
     an event created earlier today — e.g. "put X on my calendar" scheduled for
-    today at 09:00 — does not disappear from the ECC calendar list merely
+    today at 09:00 — does not disappear from the Orbit calendar list merely
     because its start time has passed. The future window extends ``days`` days
     from now. Events that ended before today are dropped defensively.
     """

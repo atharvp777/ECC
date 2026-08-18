@@ -1,12 +1,12 @@
-"""AI provider abstraction for the Engineering Command Center.
+"""AI provider abstraction for Orbit.
 
-ECC talks to exactly one LLM backend at a time, chosen by ``settings.AI_PROVIDER``:
+Orbit talks to exactly one LLM backend at a time, chosen by ``settings.AI_PROVIDER``:
 
 - ``gemini`` (primary) — Google Gemini via the official ``google-genai`` SDK.
   The exact model is ``settings.AI_MODEL`` (default ``gemini-3.5-flash-lite``).
 - ``groq`` (fallback) — Groq ``llama-3.3-70b-versatile``.
 
-The rest of ECC only calls ``complete_text`` (plus the small configuration
+The rest of Orbit only calls ``complete_text`` (plus the small configuration
 helpers). This module picks the backend, converts the caller's ``system``
 prompt + message list into the provider's expected input, and normalizes
 provider failures into safe ``AIProviderError`` messages so the existing

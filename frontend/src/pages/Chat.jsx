@@ -9,7 +9,7 @@ export default function Chat() {
   const initialMessage = {
     role: "assistant",
     content:
-      "Hey Atharv 👋 I'm your Engineering Command Center AI.\n\nI have live access to your projects, tasks, notes, and documents.",
+      "Hey Atharv 👋 I'm your Orbit AI.\n\nI have live access to your projects, tasks, notes, and documents.",
   };
   const [messages, setMessages] = useState(() => {
     try {

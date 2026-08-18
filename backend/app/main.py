@@ -30,7 +30,7 @@ run_idempotent_migrations(engine)
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Backend API for the Engineering Command Center.",
+    description="Backend API for Orbit.",
 )
 
 # CORS

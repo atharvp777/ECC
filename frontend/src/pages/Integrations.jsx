@@ -163,7 +163,7 @@ export default function Integrations() {
     <div className="page" style={{ maxWidth: 720 }}>
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700 }}>Integrations</h2>
-        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Connect external tools to your Command Center.</p>
+        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Connect external tools to Orbit.</p>
       </div>
       <GoogleCalendarSection connected={!!status?.google_calendar} canWrite={!!status?.google_calendar_can_write} onRefresh={load} />
     </div>

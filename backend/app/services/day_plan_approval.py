@@ -227,7 +227,7 @@ def _block_in_free_windows(block: ScheduledBlock, overview) -> bool:
 
 
 def _event_description(block: ScheduledBlock) -> str:
-    parts = [f'Work block for "{block.title}" from your ECC day plan.']
+    parts = [f'Work block for "{block.title}" from your Orbit day plan.']
     if block.project:
         parts.append(f"Project: {block.project}.")
     return " ".join(parts)

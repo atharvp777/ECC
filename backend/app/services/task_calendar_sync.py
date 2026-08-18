@@ -9,7 +9,7 @@ this module owns the orchestration between a Task row and its linked event:
 
 Invariant: a task row is NEVER rolled back or deleted because a Google
 Calendar write failed. Failures are recorded in ``calendar_sync_error`` so the
-task stays safe in the ECC database and can be retried later.
+task stays safe in the Orbit database and can be retried later.
 """
 
 from datetime import datetime

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ecc-frontend",
+  "productName": "Orbit",
   "version": "0.1.0",
   "identifier": "com.root.ecc-frontend",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ecc-frontend",
+        "title": "Orbit",
         "width": 800,
         "height": 600
       }

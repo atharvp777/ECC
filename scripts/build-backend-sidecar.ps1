@@ -10,13 +10,13 @@ $packagingPython = if ($env:ECC_PYTHON) { $env:ECC_PYTHON } else { 'python3.12' 
 if (-not (Test-Path $venvPython)) {
     $version = & $packagingPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
     if ($LASTEXITCODE -ne 0) {
-        throw 'Python 3.12 is required to package ECC. Install it, or set ECC_PYTHON to its executable path.'
+        throw 'Python 3.12 is required to package Orbit. Install it, or set ECC_PYTHON to its executable path.'
     }
     if ($version -notmatch '^(3\.1[01]|3\.12)$') {
-        throw "ECC packaging requires Python 3.10–3.12; found Python $version. Set ECC_PYTHON to a compatible interpreter."
+        throw "Orbit packaging requires Python 3.10–3.12; found Python $version. Set ECC_PYTHON to a compatible interpreter."
     }
     & $packagingPython -m venv $venv
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create the ECC packaging environment.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the Orbit packaging environment.' }
 }
 
 & $venvPython -m pip install -r (Join-Path $backend 'requirements.txt')

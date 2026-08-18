@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Verification runner for the Engineering Command Center project.
+    Verification runner for the Orbit project.
 
 .DESCRIPTION
     1. Checks that a Python virtual environment exists (./.venv).

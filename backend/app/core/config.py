@@ -4,7 +4,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    APP_NAME: str = "Engineering Command Center"
+    APP_NAME: str = "Orbit"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 

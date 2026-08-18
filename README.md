@@ -1,4 +1,4 @@
-# Engineering Command Center
+# Orbit
 
 Atharv's personal AI-powered productivity system for eBAJA, AgroVault, college, and personal projects.
 

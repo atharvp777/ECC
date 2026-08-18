@@ -321,7 +321,7 @@ class AIServiceError(Exception):
 # ----------------------------------------------------------------------
 # System prompt & context helpers (unchanged from previous version)
 # ----------------------------------------------------------------------
-SYSTEM_PROMPT = """You are the Engineering Command Center AI — a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
+SYSTEM_PROMPT = """You are Orbit — a sharp, concise assistant built for Atharv, a mechanical engineering student and Formula SAE (electric vehicle) team member.
 
 You have real-time access to Atharv's projects, tasks, notes, and documents. Use this context to give specific, actionable answers — not generic ones.
 
@@ -728,7 +728,7 @@ def plan_tool_call(
     history_lines = _render_planner_history(history)
 
     planner_prompt = f"""
-You are the tool-planning layer for an Engineering Command Center.
+You are the tool-planning layer for Orbit.
 
 Your job is to convert the user's request into ONE tool call when an
 action, a database operation, or a current-state read (what's on my calendar /
