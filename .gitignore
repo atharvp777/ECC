@@ -12,6 +12,10 @@ backend/knowledge/
 backend/*.log
 backend/*.pid
 
+# Test coverage artifacts
+.coverage
+htmlcov/
+
 # JavaScript and Tauri build output
 frontend/node_modules/
 frontend/dist/
