@@ -20,6 +20,7 @@ from app.services.tools import (
     remove_task_from_calendar as rtc,
     get_today_overview as gto,
     plan_my_day as pmd,
+    estimate_task_effort as etf,
     SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
@@ -43,6 +44,7 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "remove_task_from_calendar": rtc,
     "get_today_overview": gto,
     "plan_my_day": pmd,
+    "estimate_task_effort": etf,
 }
 
 
@@ -179,6 +181,7 @@ def execute_tool(
             "update_task",
             "complete_task",
             "delete_task",
+            "estimate_task_effort",
         ):
             from app.services.tools import resolve_task_for_calendar
 
@@ -188,6 +191,7 @@ def execute_tool(
                 "update_task": "update",
                 "complete_task": "complete",
                 "delete_task": "delete",
+                "estimate_task_effort": "estimate",
             }
             task_title = args.pop("task_title", None)
             task_id = args.get("task_id")
@@ -207,6 +211,28 @@ def execute_tool(
                     task_id=task_id,
                     op=op_map[tool_name],
                 )
+                if resolution["status"] != "found":
+                    # A confirmation-style turn ("use that estimate") carries no
+                    # task identity of its own; the planner copies the reference
+                    # from the conversation. Resolve that only when the verbatim
+                    # user message matched NOTHING — an ambiguous user message
+                    # must still be surfaced for clarification and never be
+                    # silently overridden by the planner's own title.
+                    if (
+                        resolution["status"] == "not_found"
+                        and task_title
+                        and isinstance(task_title, str)
+                        and task_title.strip()
+                        and reference != task_title
+                    ):
+                        alt = resolve_task_for_calendar(
+                            db,
+                            task_title,
+                            task_id=task_id,
+                            op=op_map[tool_name],
+                        )
+                        if alt["status"] == "found":
+                            resolution = alt
                 if resolution["status"] != "found":
                     # A reference with NO meaningful tokens (e.g. "task 5") is a
                     # bare-id mention — trust an explicit task_id the planner got
@@ -267,6 +293,7 @@ def execute_tool(
             RemoveTaskFromCalendarRequest,
             GetTodayOverviewRequest,
             PlanMyDayRequest,
+            EstimateTaskEffortRequest,
         )
 
         request_models = {
@@ -287,6 +314,7 @@ def execute_tool(
             "remove_task_from_calendar": RemoveTaskFromCalendarRequest,
             "get_today_overview": GetTodayOverviewRequest,
             "plan_my_day": PlanMyDayRequest,
+            "estimate_task_effort": EstimateTaskEffortRequest,
         }
 
         request_model = request_models.get(tool_name)

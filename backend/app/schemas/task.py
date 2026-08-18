@@ -1,6 +1,7 @@
 from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
 from app.core.timeutil import normalize_to_system
+from app.core.duration import validate_estimated_minutes
 from app.models.task import TaskPriority, TaskStatus, TaskType
 
 
@@ -32,6 +33,13 @@ class TaskCreate(TaskBase):
     start_time: str | None = None
     duration_minutes: int = 60
 
+    @field_validator("estimated_minutes")
+    @classmethod
+    def _validate_estimated_minutes(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        return validate_estimated_minutes(v)
+
 
 class TaskUpdate(BaseModel):
     title: str | None = None
@@ -57,6 +65,13 @@ class TaskUpdate(BaseModel):
     @classmethod
     def _normalize_deadline(cls, v: datetime | None) -> datetime | None:
         return normalize_to_system(v)
+
+    @field_validator("estimated_minutes")
+    @classmethod
+    def _validate_estimated_minutes(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        return validate_estimated_minutes(v)
 
 
 class TaskRead(TaskBase):

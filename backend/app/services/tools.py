@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
@@ -8,6 +8,7 @@ from app.models import Project, Task, TaskStatus, TaskPriority
 from app.models.project import ProjectCategory, ProjectStatus
 from app.models.task import TaskType
 from app.core.timeutil import normalize_to_system
+from app.core.duration import parse_duration_to_minutes, validate_estimated_minutes
 from app.services.google_calendar import (
     get_upcoming_events as gc_get_upcoming_events,
     create_calendar_event as gc_create_calendar_event,
@@ -67,6 +68,12 @@ class UpdateTaskRequest(BaseModel):
     deadline_when: Optional[str] = None
     project_id: Optional[int] = None
     status: Optional[str] = None
+    # Task effort. ``estimated_when`` is the user's VERBATIM duration phrase
+    # ("90 minutes", "1.5 hours") parsed deterministically server-side;
+    # ``estimated_minutes`` is an explicit integer number of minutes. Both are
+    # validated; a bare number with no unit is rejected instead of guessed.
+    estimated_minutes: Optional[int] = None
+    estimated_when: Optional[str] = None
     # Calendar scheduling (optional)
     when: Optional[str] = None
     start_time: Optional[str] = None
@@ -141,6 +148,17 @@ class PlanMyDayRequest(BaseModel):
     computes today's recommended schedule deterministically from the planning
     overview and real calendar availability."""
     pass
+
+
+class EstimateTaskEffortRequest(BaseModel):
+    """Read-only task-effort estimation request.
+
+    The task is identified with the existing task-resolution architecture
+    (``task_title`` verbatim reference and/or ``task_id``). The tool proposes
+    an estimate but never mutates the task.
+    """
+    task_id: Optional[int] = None
+    task_title: Optional[str] = None  # user's verbatim reference; resolved server-side
 
 
 # ---------- Calendar event body resolution (deterministic, server-side) ----------
@@ -473,6 +491,7 @@ _AMBIGUOUS_TASK_QUESTIONS = {
     "update": "Which one did you mean to update?",
     "complete": "Which one should I mark complete?",
     "delete": "Which one should I delete?",
+    "estimate": "Which one did you mean to estimate?",
 }
 
 
@@ -737,6 +756,33 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     for key in ("title", "status", "priority", "task_type"):
         if update_data.get(key) in (None, ""):
             update_data.pop(key, None)
+
+    # Task effort: either a verbatim duration phrase (parsed server-side) or an
+    # explicit integer number of minutes. Both are validated; an ambiguous bare
+    # number ("make it 2") is rejected instead of guessed, and a null estimate
+    # is treated as "no change" so a planner's spurious null never erases an
+    # existing estimate.
+    if "estimated_when" in update_data or "estimated_minutes" in update_data:
+        estimate_when = update_data.pop("estimated_when", None)
+        estimate_value = update_data.pop("estimated_minutes", None)
+        if estimate_when:
+            minutes = parse_duration_to_minutes(estimate_when)
+            if minutes is None:
+                return {"data": {"error": (
+                    f'I couldn\'t understand "{estimate_when}" as a duration. '
+                    "Use a clear phrase like '90 minutes', '1 hour' or '1.5 hours'."
+                )}}
+            try:
+                update_data["estimated_minutes"] = validate_estimated_minutes(minutes)
+            except ValueError as exc:
+                return {"data": {"error": str(exc)}}
+        elif estimate_value is not None:
+            try:
+                update_data["estimated_minutes"] = validate_estimated_minutes(estimate_value)
+            except ValueError as exc:
+                return {"data": {"error": str(exc)}}
+        # Both null → no estimate change requested.
+
     schedule_on_calendar = update_data.pop("schedule_on_calendar", False)
     when = update_data.pop("when", None)
     start_time = update_data.pop("start_time", None)
@@ -992,6 +1038,29 @@ def plan_my_day(db: Session, req: PlanMyDayRequest) -> Dict[str, Any]:
     from app.services.day_planner import build_day_plan
 
     return {"data": build_day_plan(build_today_overview(db))}
+
+
+def estimate_task_effort(db: Session, req: EstimateTaskEffortRequest) -> Dict[str, Any]:
+    """Read-only AI effort proposal for a resolved task (never mutates).
+
+    The dispatcher resolves the user's task reference first; this wrapper only
+    loads the task row and delegates to the estimation service, which performs
+    the single model call and returns the structured recommendation. The
+    estimate is a proposal — saving it requires a separate, explicit
+    ``update_task`` mutation.
+    """
+    task = (
+        db.query(Task)
+        .options(joinedload(Task.project))
+        .filter(Task.id == req.task_id)
+        .first()
+    )
+    if not task:
+        return {"data": {"error": f"Task not found: {req.task_id}"}}
+
+    from app.services.effort_estimation import propose_effort_estimate
+
+    return {"data": propose_effort_estimate(db, task)}
 
 
 def create_calendar_event(db: Session, req: CreateCalendarEventRequest) -> Dict[str, Any]:

@@ -213,10 +213,33 @@ def _render_task_created(data) -> str:
 
 
 def _render_task_updated(data) -> str:
-    base = f"Updated task {data.id}."
+    if getattr(data, "estimated_minutes", None) is not None:
+        base = (
+            f'Updated task "{data.title}" — estimate set to '
+            f"{data.estimated_minutes} minutes."
+        )
+    else:
+        base = f"Updated task {data.id}."
     if data.calendar_sync_error:
         return f"{base} Calendar sync failed: {_safe_sync_reason(data.calendar_sync_error)}"
     return base
+
+
+def _render_effort_estimate(data) -> str:
+    """Render a read-only effort proposal. Never claims anything was saved —
+    the estimate is a recommendation until the user confirms and update_task
+    actually succeeds."""
+    title = getattr(data, "task_title", None) or "(task)"
+    if getattr(data, "estimated_minutes", None) is not None:
+        return (
+            f"I'd estimate about {data.estimated_minutes} minutes for "
+            f'"{title}" ({data.confidence} confidence). {data.reasoning} '
+            "It's just a proposal — say 'use that estimate' and I'll save it."
+        )
+    return (
+        f"I don't have enough information to estimate \"{title}\" confidently. "
+        f"{data.reasoning or ''}".strip()
+    )
 
 
 def _is_reschedule_request(text: str) -> bool:
@@ -600,6 +623,24 @@ def _project_document_context(db: Session, messages: List[dict]) -> str:
 # ----------------------------------------------------------------------
 import re, json
 
+
+def _render_planner_history(history: Optional[List[dict]]) -> str:
+    """Render the assistant's most recent reply for the tool planner.
+
+    Confirmation turns ("use that estimate") carry no task reference or value
+    in the user message; the only place those exist is the assistant's prior
+    proposal. Feeding the planner that single reply lets it copy the task
+    reference and proposed minutes verbatim WITHOUT exposing prior user
+    turns — the planner still plans from the latest user message only.
+    """
+    if not history:
+        return "(no prior conversation)"
+    for message in reversed(history):
+        if message.get("role") == "assistant":
+            content = (message.get("content") or "").strip()
+            return f"assistant: {content}" if content else "(no prior conversation)"
+    return "(no prior conversation)"
+
 def extract_tool_call(message: str) -> Optional[dict]:
     """
     Detect a tool request of the form:
@@ -618,9 +659,17 @@ def extract_tool_call(message: str) -> Optional[dict]:
         return None
     return None
 
-def plan_tool_call(user_message: str, context: str) -> Optional[dict]:
+def plan_tool_call(
+    user_message: str,
+    context: str,
+    history: Optional[List[dict]] = None,
+) -> Optional[dict]:
     """
     Convert a natural-language action request into a tool call.
+
+    ``history`` (optional) is the recent conversation. It lets the planner
+    resolve confirmation-style turns ("use that estimate") against a proposal
+    the assistant just made, copying the task reference and value verbatim.
 
     Returns:
         {"tool": "...", "args": {...}}
@@ -628,6 +677,8 @@ def plan_tool_call(user_message: str, context: str) -> Optional[dict]:
     """
     system_timezone = SYSTEM_TIMEZONE
     now_local = datetime.now(ZoneInfo(system_timezone))
+
+    history_lines = _render_planner_history(history)
 
     planner_prompt = f"""
 You are the tool-planning layer for an Engineering Command Center.
@@ -683,6 +734,13 @@ Arguments:
   "title": "string or null",
   "priority": "string or null", "deadline_when": "string or null",
   "status": "string or null", "task_type": "work | reminder | meeting or null",
+  "estimated_minutes": "integer number of minutes ONLY when the conversation
+                        unambiguously establishes a minutes value (e.g. the
+                        assistant just proposed 90 minutes and the user says
+                        'use that estimate'). Never a bare number with no unit.",
+  "estimated_when": "the user's VERBATIM duration phrase ('90 minutes', '1 hour',
+                     '1.5 hours', '45 min') when they state a duration — the
+                     server parses it. null otherwise.",
   "when": "string or null",
   "start_time": "string or null", "duration_minutes": 60,
   "schedule_on_calendar": "true or false"}}
@@ -822,6 +880,17 @@ that could not be scheduled with reasons, unused time). Call it INSTEAD of
 inventing a schedule or reusing a stale one from conversation history. Never
 pass arguments — the backend computes the plan.
 
+18. estimate_task_effort
+Use when the user asks how long a task will take, asks to estimate a task's
+duration ("estimate the PCB task", "how long will X take?", "re-estimate
+this task"). This tool is READ-ONLY: it proposes an estimate and never saves
+anything.
+Arguments:
+{{"task_title": "the task reference copied VERBATIM from the user's message —
+  exactly the words the user used. The server resolves it.",
+  "task_id": "integer ONLY when the context lists that exact task with its ID
+              and you are certain it is the one the user means; otherwise null."}}
+
 RULES:
 
 - For CURRENT-STATE planning questions ("what should I focus on today", "what
@@ -836,6 +905,20 @@ RULES:
   time"), ALWAYS return plan_my_day with {{}}. The result is a RECOMMENDED
   schedule only — never claim it was added to Google Calendar or that any task
   was changed.
+- For EFFORT questions ("how long will X take?", "estimate X", "re-estimate
+  X"), ALWAYS return estimate_task_effort with the task reference copied
+  VERBATIM. The result is a PROPOSAL only — never claim it was saved.
+- DURATION PARSING:
+  - "set X to 90 minutes", "make X 1 hour", "estimate X at 1.5 hours" →
+    update_task with the user's VERBATIM duration phrase in "estimated_when".
+  - A bare number with no unit ("make it 2") is AMBIGUOUS — never pass
+    estimated_minutes for it. Only pass estimated_minutes when the value is
+    unambiguously minutes from the conversation (e.g. the assistant just
+    proposed "90 minutes" and the user says "use that estimate").
+  - "use that estimate" / "save the estimate" after an estimation reply →
+    update_task: copy the task reference VERBATIM from the LAST ASSISTANT REPLY
+    and pass the proposed minutes value in estimated_minutes.
+  - NEVER pass a value over 1440 minutes.
 
 - Return NONE if the user is only asking a general question.
 - Return a tool call if the user clearly wants an action.
@@ -929,6 +1012,12 @@ start/end times yourself.
 
 LIVE CONTEXT:
 {context}
+
+LAST ASSISTANT REPLY (for reference — use it to resolve confirmation turns
+like "use that estimate" by copying the task reference and proposed value
+from the assistant's reply; it is shown because such confirmations name
+neither):
+{history_lines}
 
 USER REQUEST:
 {user_message}
@@ -1269,7 +1358,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
     planned_tool_call = False
 
     if tool_call is None:
-        tool_call = plan_tool_call(last_user, context)
+        tool_call = plan_tool_call(last_user, context, history=messages)
         planned_tool_call = tool_call is not None
 
     if tool_call:
@@ -1380,6 +1469,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                     "update_task",
                     "complete_task",
                     "delete_task",
+                    "estimate_task_effort",
                 )
             ):
                 return data["error"]
@@ -1466,6 +1556,8 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             "add_task_to_calendar": lambda: _render_task_calendar_linked(data, moved=rescheduled),
 
             "remove_task_from_calendar": lambda: _render_task_calendar_removed(data),
+
+            "estimate_task_effort": lambda: _render_effort_estimate(data),
         }
 
             # Only claim a calendar event was created after the API returned a
