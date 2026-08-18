@@ -129,6 +129,13 @@ class RemoveTaskFromCalendarRequest(BaseModel):
     task_id: int
 
 
+class GetTodayOverviewRequest(BaseModel):
+    """Read-only current-state planning query. No arguments needed — the
+    backend computes the IST calendar-day overview from the database and
+    calendar API."""
+    pass
+
+
 # ---------- Calendar event body resolution (deterministic, server-side) ----------
 # The system timezone is UTC+05:30. The planner never guesses "now"; it passes a
 # natural-language `when` phrase and the server resolves the concrete datetime.
@@ -953,6 +960,17 @@ def delete_task(db: Session, req: DeleteTaskRequest) -> Dict[str, Any]:
 def list_calendar_events(db: Session, req: ListCalendarEventsRequest) -> Dict[str, Any]:
     events = gc_get_upcoming_events(days=7, max_results=20)
     return {"data": events}
+
+
+def get_today_overview(db: Session, req: GetTodayOverviewRequest) -> Dict[str, Any]:
+    """Read-only Today planning overview (never mutates any state).
+
+    Delegates entirely to the deterministic planning service — this wrapper
+    exists only so the AI tool dispatcher has a uniform (db, request) shape.
+    """
+    from app.services.planning_service import get_today_overview as build_today_overview
+
+    return {"data": build_today_overview(db)}
 
 
 def create_calendar_event(db: Session, req: CreateCalendarEventRequest) -> Dict[str, Any]:

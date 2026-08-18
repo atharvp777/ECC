@@ -18,6 +18,7 @@ from app.services.tools import (
     delete_calendar_event as dce,
     add_task_to_calendar as atc,
     remove_task_from_calendar as rtc,
+    get_today_overview as gto,
     SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
@@ -39,6 +40,7 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "delete_calendar_event": dce,
     "add_task_to_calendar": atc,
     "remove_task_from_calendar": rtc,
+    "get_today_overview": gto,
 }
 
 
@@ -261,6 +263,7 @@ def execute_tool(
             DeleteCalendarEventRequest,
             AddTaskToCalendarRequest,
             RemoveTaskFromCalendarRequest,
+            GetTodayOverviewRequest,
         )
 
         request_models = {
@@ -279,6 +282,7 @@ def execute_tool(
             "delete_calendar_event": DeleteCalendarEventRequest,
             "add_task_to_calendar": AddTaskToCalendarRequest,
             "remove_task_from_calendar": RemoveTaskFromCalendarRequest,
+            "get_today_overview": GetTodayOverviewRequest,
         }
 
         request_model = request_models.get(tool_name)
