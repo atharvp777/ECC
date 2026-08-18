@@ -707,6 +707,13 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     update_data = req.dict(exclude_unset=True)
     update_data.pop("task_id", None)
     update_data.pop("task_title", None)
+    # A planner may emit null/empty for fields it doesn't intend to change.
+    # Never apply a blank to enum/status columns or the NOT NULL title — those
+    # nulls are spurious, not "clear" intents. deadline / description / the
+    # schedule fields keep their explicit-clear semantics.
+    for key in ("title", "status", "priority", "task_type"):
+        if update_data.get(key) in (None, ""):
+            update_data.pop(key, None)
     schedule_on_calendar = update_data.pop("schedule_on_calendar", False)
     when = update_data.pop("when", None)
     start_time = update_data.pop("start_time", None)

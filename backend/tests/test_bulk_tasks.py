@@ -543,6 +543,41 @@ def test_update_task_direct_id_still_works(db_session):
     assert t1.title == "New name"
 
 
+def test_update_task_blank_title_does_not_clobber(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wiring Diagram", project=proj)
+
+    # A planner can emit title:null while only changing priority — the title
+    # column is NOT NULL and must never be overwritten with a blank value.
+    result = execute_tool(
+        "update_task",
+        {"task_id": t1.id, "title": None, "priority": "high"},
+        db_session,
+    )
+
+    db_session.refresh(t1)
+    assert t1.title == "Wiring Diagram"
+    assert t1.priority == TaskPriority.HIGH
+
+
+def test_update_task_spurious_null_status_and_type_ignored(db_session):
+    proj = _project(db_session)
+    t1 = _task(db_session, "Wind Test", project=proj)
+
+    # The planner may emit nulls for status/task_type it doesn't intend to
+    # change — NOT NULL columns must not be clobbered.
+    result = execute_tool(
+        "update_task",
+        {"task_id": t1.id, "status": None, "task_type": None, "priority": "critical"},
+        db_session,
+    )
+
+    db_session.refresh(t1)
+    assert t1.title == "Wind Test"
+    assert t1.status == TaskStatus.TODO
+    assert t1.priority == TaskPriority.CRITICAL
+
+
 def test_update_task_missing_id_no_reference_errors(db_session):
     result = execute_tool("update_task", {"title": "X"}, db_session)
     assert "error" in result["data"]
