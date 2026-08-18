@@ -1,7 +1,7 @@
 import logging
 import groq
 from groq import Groq
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import func
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -319,7 +319,15 @@ def _build_context(db: Session) -> str:
     from app.models.task import Task, TaskStatus, TaskPriority
     from app.models.note import Note
 
-    projects = db.query(Project).filter(Project.status == ProjectStatus.ACTIVE).all()
+    # Eager-load per-project collections and per-task project so context
+    # building stays at a constant number of queries regardless of workspace
+    # size (no N+1 lazy loads on the chat hot path).
+    projects = (
+        db.query(Project)
+        .options(selectinload(Project.tasks), selectinload(Project.documents))
+        .filter(Project.status == ProjectStatus.ACTIVE)
+        .all()
+    )
     if projects:
         lines.append("## Active Projects")
         for p in projects:
@@ -340,6 +348,7 @@ def _build_context(db: Session) -> str:
 
     overdue = (
         db.query(Task)
+        .options(joinedload(Task.project))
         .filter(Task.deadline < now, Task.status != TaskStatus.DONE)
         .order_by(Task.deadline.asc())
         .limit(10)
@@ -358,6 +367,7 @@ def _build_context(db: Session) -> str:
     week_end = now + timedelta(days=7)
     upcoming = (
         db.query(Task)
+        .options(joinedload(Task.project))
         .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != TaskStatus.DONE)
         .order_by(Task.deadline.asc())
         .limit(15)
