@@ -1,5 +1,6 @@
 import pytest
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,8 @@ from app.models.task import Task, TaskStatus, TaskPriority
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 @pytest.fixture
@@ -66,11 +69,11 @@ def test_due_today_only_counts_today(client, monkeypatch):
     test_client, db = client
     _freeze_now(monkeypatch)
 
-    _add_task(db, datetime(2026, 1, 15, 15, 0, tzinfo=timezone.utc))     # due today -> counted
-    _add_task(db, datetime(2026, 1, 13, 10, 0, tzinfo=timezone.utc))     # overdue -> NOT due today
-    _add_task(db, datetime(2026, 1, 16, 9, 0, tzinfo=timezone.utc))      # tomorrow -> NOT due today
-    _add_task(db, None)                                                  # no deadline -> NOT due today
-    _add_task(db, datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc), status=TaskStatus.DONE)  # done today -> NOT due today
+    _add_task(db, datetime(2026, 1, 15, 20, 30, tzinfo=IST))    # due today -> counted
+    _add_task(db, datetime(2026, 1, 13, 15, 30, tzinfo=IST))    # overdue -> NOT due today
+    _add_task(db, datetime(2026, 1, 16, 14, 30, tzinfo=IST))    # tomorrow -> NOT due today
+    _add_task(db, None)                                         # no deadline -> NOT due today
+    _add_task(db, datetime(2026, 1, 15, 19, 30, tzinfo=IST), status=TaskStatus.DONE)  # done today -> NOT due today
 
     response = test_client.get("/dashboard/stats")
 
@@ -84,8 +87,8 @@ def test_due_today_empty_when_nothing_due_today(client, monkeypatch):
     test_client, db = client
     _freeze_now(monkeypatch)
 
-    _add_task(db, datetime(2026, 1, 18, 9, 0, tzinfo=timezone.utc))      # in 3 days
-    _add_task(db, datetime(2026, 1, 10, 9, 0, tzinfo=timezone.utc))      # 5 days ago
+    _add_task(db, datetime(2026, 1, 18, 14, 30, tzinfo=IST))    # in 3 days
+    _add_task(db, datetime(2026, 1, 10, 14, 30, tzinfo=IST))    # 5 days ago
 
     response = test_client.get("/dashboard/stats")
 
@@ -99,9 +102,9 @@ def test_due_today_excludes_done_overdue_and_tomorrow(client, monkeypatch):
     test_client, db = client
     _freeze_now(monkeypatch)
 
-    _add_task(db, datetime(2026, 1, 15, 14, 0, tzinfo=timezone.utc), status=TaskStatus.DONE)
-    _add_task(db, datetime(2026, 1, 16, 9, 0, tzinfo=timezone.utc))      # tomorrow
-    _add_task(db, datetime(2026, 1, 14, 9, 0, tzinfo=timezone.utc))      # overdue
+    _add_task(db, datetime(2026, 1, 15, 19, 30, tzinfo=IST), status=TaskStatus.DONE)
+    _add_task(db, datetime(2026, 1, 16, 14, 30, tzinfo=IST))    # tomorrow
+    _add_task(db, datetime(2026, 1, 14, 14, 30, tzinfo=IST))    # overdue
 
     response = test_client.get("/dashboard/stats")
 

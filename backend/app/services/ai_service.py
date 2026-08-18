@@ -302,10 +302,12 @@ _MAX_HISTORY_MESSAGES = 20
 
 
 def _build_context(db: Session) -> str:
-    now = datetime.now(timezone.utc)
-    now_naive = now.replace(tzinfo=None)
-    
-    lines = [f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M UTC')}) ---\n"]
+    from app.core.timeutil import SYSTEM_TIMEZONE, normalize_to_system
+
+    now = normalize_to_system(datetime.now(timezone.utc))
+    lines = [
+        f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M %Z')}, {SYSTEM_TIMEZONE}) ---\n"
+    ]
 
     from app.models.project import Project
     from app.models.task import Task
@@ -332,7 +334,7 @@ def _build_context(db: Session) -> str:
 
     overdue = (
         db.query(Task)
-        .filter(Task.deadline < now_naive, Task.status != "DONE")
+        .filter(Task.deadline < now, Task.status != "DONE")
         .order_by(Task.deadline.asc())
         .limit(10)
         .all()
@@ -340,16 +342,17 @@ def _build_context(db: Session) -> str:
     if overdue:
         lines.append("## Overdue Tasks")
         for t in overdue:
-            deadline = t.deadline.replace(tzinfo=timezone.utc)
-            days = (now - deadline).days
+            # SQLite returns naive wall-clock datetimes (system timezone).
+            deadline_utc = normalize_to_system(t.deadline).astimezone(timezone.utc)
+            days = (now.astimezone(timezone.utc) - deadline_utc).days
             proj = t.project.name if t.project else "No project"
             lines.append(f"- [ID: {t.id}] [{t.priority.upper()}] {t.title} — {days}d overdue ({proj})")
         lines.append("")
 
-    week_end = now_naive + timedelta(days=7)
+    week_end = now + timedelta(days=7)
     upcoming = (
         db.query(Task)
-        .filter(Task.deadline >= now_naive, Task.deadline <= week_end, Task.status != "DONE")
+        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != "DONE")
         .order_by(Task.deadline.asc())
         .limit(15)
         .all()

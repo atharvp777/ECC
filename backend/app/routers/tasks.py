@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from app.core.database import get_db
+from app.core.timeutil import SYSTEM_TIMEZONE, normalize_to_system
 from app.models.task import Task, TaskStatus, TaskPriority
 from app.models.project import Project
 from app.schemas.task import TaskCreate, TaskUpdate, TaskRead
@@ -19,8 +20,6 @@ from app.services.task_calendar_sync import (
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-SYSTEM_TIMEZONE = "Asia/Kolkata"
 
 
 class TaskCalendarRequest(BaseModel):
@@ -68,7 +67,7 @@ def list_tasks(
 @router.get("/today", response_model=list[TaskRead])
 def get_todays_tasks(db: Session = Depends(get_db)):
     """Returns tasks due today or overdue and not yet done."""
-    now = datetime.now(timezone.utc)
+    now = normalize_to_system(datetime.now(timezone.utc))
     end_of_today = now.replace(hour=23, minute=59, second=59)
     tasks = (
         db.query(Task)
@@ -85,7 +84,7 @@ def get_todays_tasks(db: Session = Depends(get_db)):
 @router.get("/upcoming", response_model=list[TaskRead])
 def get_upcoming_tasks(days: int = Query(7), db: Session = Depends(get_db)):
     """Returns tasks due in the next N days."""
-    now = datetime.now(timezone.utc)
+    now = normalize_to_system(datetime.now(timezone.utc))
     future = now + timedelta(days=days)
     tasks = (
         db.query(Task)

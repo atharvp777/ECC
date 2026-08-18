@@ -7,6 +7,7 @@ import re
 from app.models import Project, Task, TaskStatus, TaskPriority
 from app.models.project import ProjectCategory
 from app.models.task import TaskType
+from app.core.timeutil import normalize_to_system
 from app.services.google_calendar import (
     get_upcoming_events as gc_get_upcoming_events,
     create_calendar_event as gc_create_calendar_event,
@@ -659,8 +660,8 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     deadline = None
 
     if req.deadline:
-        deadline = datetime.fromisoformat(
-            req.deadline.replace("Z", "+00:00")
+        deadline = normalize_to_system(
+            datetime.fromisoformat(req.deadline.replace("Z", "+00:00"))
         )
     elif getattr(req, "deadline_when", None):
         deadline = resolve_deadline(req.deadline_when)
@@ -736,7 +737,7 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
             # Convert ISO string to datetime; handle Z suffix for UTC
             if value.endswith("Z"):
                 value = value[:-1] + "+00:00"
-            task.deadline = datetime.fromisoformat(value)
+            task.deadline = normalize_to_system(datetime.fromisoformat(value))
         elif field == "deadline_when":
             task.deadline = resolve_deadline(value)
         elif field == "project_id" and value is not None:

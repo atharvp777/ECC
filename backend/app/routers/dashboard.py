@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from pydantic import BaseModel
 
 from app.core.database import get_db
+from app.core.timeutil import SYSTEM_TIMEZONE, normalize_to_system
 from app.models.project import Project, ProjectStatus
 from app.models.task import Task, TaskStatus, TaskPriority
 
@@ -24,7 +25,7 @@ class DashboardStats(BaseModel):
 
 @router.get("/stats", response_model=DashboardStats)
 def get_dashboard_stats(db: Session = Depends(get_db)):
-    now = datetime.now(timezone.utc)
+    now = normalize_to_system(datetime.now(timezone.utc))
     start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end_of_today = now.replace(hour=23, minute=59, second=59, microsecond=999999)
     end_of_week = now + timedelta(days=7)

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
+from app.core.timeutil import normalize_to_system
 from app.models.task import TaskPriority, TaskStatus, TaskType
 
 
@@ -14,6 +15,11 @@ class TaskBase(BaseModel):
     is_recurring: bool = False
     recurrence_rule: str | None = None
     project_id: int | None = None
+
+    @field_validator("deadline")
+    @classmethod
+    def _normalize_deadline(cls, v: datetime | None) -> datetime | None:
+        return normalize_to_system(v)
 
 
 class TaskCreate(TaskBase):
@@ -36,7 +42,7 @@ class TaskUpdate(BaseModel):
     deadline: datetime | None = None
     estimated_minutes: int | None = None
     actual_minutes: int | None = None
-    is_recurring: bool | None = None
+    is_recurring: bool = None
     recurrence_rule: str | None = None
     project_id: int | None = None
     # Calendar scheduling (optional)
@@ -46,6 +52,11 @@ class TaskUpdate(BaseModel):
     when: str | None = None
     start_time: str | None = None
     duration_minutes: int = 60
+
+    @field_validator("deadline")
+    @classmethod
+    def _normalize_deadline(cls, v: datetime | None) -> datetime | None:
+        return normalize_to_system(v)
 
 
 class TaskRead(TaskBase):

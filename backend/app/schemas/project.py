@@ -1,5 +1,6 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from datetime import datetime
+from app.core.timeutil import normalize_to_system
 from app.models.project import ProjectCategory, ProjectStatus
 
 
@@ -10,6 +11,11 @@ class ProjectBase(BaseModel):
     status: ProjectStatus = ProjectStatus.ACTIVE
     deadline: datetime | None = None
     color: str = "#6366f1"
+
+    @field_validator("deadline")
+    @classmethod
+    def _normalize_deadline(cls, v: datetime | None) -> datetime | None:
+        return normalize_to_system(v)
 
 
 class ProjectCreate(ProjectBase):
@@ -23,6 +29,11 @@ class ProjectUpdate(BaseModel):
     status: ProjectStatus | None = None
     deadline: datetime | None = None
     color: str | None = None
+
+    @field_validator("deadline")
+    @classmethod
+    def _normalize_deadline(cls, v: datetime | None) -> datetime | None:
+        return normalize_to_system(v)
 
 
 class ProjectRead(ProjectBase):

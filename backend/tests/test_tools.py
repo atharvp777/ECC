@@ -119,8 +119,10 @@ def test_create_task_with_datetime_deadline(db_session: Session):
 
     created = create_task(db_session, task_req)
     assert created["data"].title == "Wiring Diagram"
-    # The deadline should be stored as a datetime object in the DB
-    assert created["data"].deadline == datetime(2026, 8, 15, 18, 0)
+    # The deadline is normalized to the system timezone (Asia/Kolkata):
+    # 2026-08-15 18:00 UTC == 2026-08-15 23:30 IST. SQLite returns the wall
+    # clock as a naive datetime.
+    assert created["data"].deadline == datetime(2026, 8, 15, 23, 30)
 
 
 def test_update_task_and_complete_task(db_session: Session):
