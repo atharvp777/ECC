@@ -35,16 +35,28 @@ export default function Chat() {
 const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [modelIndicator, setModelIndicator] = useState("Loading AI model…");
+  const [online, setOnline] = useState(null);
   const messagesEndRef = useRef(null);
   const contextInfo = "Live project context loaded";
 
   useEffect(() => {
     fetch(`${API_BASE_URL}/api/chat/status`)
-      .then((r) => (r.ok ? r.json() : null))
+      .then((r) => {
+        if (r.ok) {
+          setOnline(true);
+          return r.json();
+        }
+        setOnline(false);
+        return null;
+      })
       .then((data) => {
         if (data && data.display) setModelIndicator(data.display);
+        else setModelIndicator("AI model unavailable");
       })
-      .catch(() => setModelIndicator("AI model unavailable"));
+      .catch(() => {
+        setOnline(false);
+        setModelIndicator("AI model unavailable");
+      });
   }, []);
 
   const styles = {
@@ -306,6 +318,13 @@ const [input, setInput] = useState("");
     setMessages([initialMessage]);
   };
 
+  const statusPill =
+    online === null
+      ? { label: "Connecting…", title: "Checking backend connection", border: "rgba(100,116,139,0.25)", bg: "rgba(100,116,139,0.08)", color: "var(--muted)", dot: "var(--muted)", glow: "rgba(100,116,139,0.12)" }
+      : online
+        ? { label: "Online", title: "Connected", border: "rgba(34,197,94,0.25)", bg: "rgba(34,197,94,0.08)", color: "#9ef0bc", dot: "var(--success)", glow: "rgba(34,197,94,0.12)" }
+        : { label: "Offline", title: "Backend unavailable", border: "rgba(239,68,68,0.25)", bg: "rgba(239,68,68,0.08)", color: "#fca5a5", dot: "var(--danger)", glow: "rgba(239,68,68,0.12)" };
+
   return (
     <div className="chat-page" style={styles.shell}>
       <div style={styles.header}>
@@ -320,9 +339,12 @@ const [input, setInput] = useState("");
         </div>
 
         <div style={styles.headerRight}>
-          <div style={styles.onlinePill} title="Connected">
-            <span style={styles.onlineDot} />
-            Online
+          <div
+            style={{ ...styles.onlinePill, border: `1px solid ${statusPill.border}`, background: statusPill.bg, color: statusPill.color }}
+            title={statusPill.title}
+          >
+            <span style={{ ...styles.onlineDot, background: statusPill.dot, boxShadow: `0 0 0 3px ${statusPill.glow}` }} />
+            {statusPill.label}
           </div>
           <button style={styles.clearButton} type="button" onClick={clearChat}>
             Clear Chat

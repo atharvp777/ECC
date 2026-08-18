@@ -55,7 +55,11 @@ function GoogleCalendarSection({ connected, canWrite, onRefresh }) {
 
   const handleDisconnect = async () => {
     if (!confirm("Disconnect Google Calendar?")) return;
-    await disconnectGoogle(); onRefresh();
+    try {
+      await disconnectGoogle(); onRefresh();
+    } catch (e) {
+      alert("Failed: " + (e.response?.data?.detail || e.message));
+    }
   };
 
   const fmtDate = (iso) => {

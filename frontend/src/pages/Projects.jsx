@@ -82,8 +82,12 @@ const [projects, setProjects] = useState([]);
   const handleDelete = async (e, id) => {
     e.stopPropagation();
     if (!confirm("Delete this project and all its tasks?")) return;
-    await deleteProject(id);
-    load();
+    try {
+      await deleteProject(id);
+      load();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   if (loading) return <div className="spinner" />;

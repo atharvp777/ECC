@@ -72,6 +72,21 @@ describe("Chat", () => {
     });
   });
 
+  it("shows an Online pill when the backend is reachable", async () => {
+    renderWithRouter(<Chat />);
+    await waitFor(() => {
+      expect(screen.getByText("Online")).toBeInTheDocument();
+    });
+  });
+
+  it("shows an Offline pill when the backend is unreachable", async () => {
+    mockFetch({ networkError: true });
+    renderWithRouter(<Chat />);
+    await waitFor(() => {
+      expect(screen.getByText("Offline")).toBeInTheDocument();
+    });
+  });
+
   it("renders the user message and the AI reply after sending", async () => {
     mockFetch({ reply: "Here are your tasks: 3 open." });
     renderWithRouter(<Chat />);

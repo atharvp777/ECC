@@ -129,13 +129,21 @@ const [searchParams]          = useSearchParams();
   useEffect(() => { load(); }, [filter, projectFilter]);
 
   const toggleDone = async (task) => {
-    await updateTask(task.id, { status: task.status === "done" ? "todo" : "done" });
-    load();
+    try {
+      await updateTask(task.id, { status: task.status === "done" ? "todo" : "done" });
+      load();
+    } catch (e) {
+      alert("Failed: " + (e.response?.data?.detail || e.message));
+    }
   };
 
-const handleDelete = async (id) => {
+  const handleDelete = async (id) => {
     if (!confirm("Delete this task?")) return;
-    await deleteTask(id); load();
+    try {
+      await deleteTask(id); load();
+    } catch (e) {
+      alert("Failed: " + (e.response?.data?.detail || e.message));
+    }
   };
 
   // Task ↔ Google Calendar

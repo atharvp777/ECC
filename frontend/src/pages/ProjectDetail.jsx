@@ -53,13 +53,21 @@ export default function ProjectDetail() {
   useEffect(() => { loadAll(); }, [id]);
 
   const toggleDone = async (task) => {
-    await updateTask(task.id, { status: task.status === "done" ? "todo" : "done" });
-    loadAll();
+    try {
+      await updateTask(task.id, { status: task.status === "done" ? "todo" : "done" });
+      loadAll();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   const handleDeleteTask = async (taskId) => {
     if (!confirm("Delete this task?")) return;
-    await deleteTask(taskId); loadAll();
+    try {
+      await deleteTask(taskId); loadAll();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   const handleUpload = async (e) => {
@@ -79,7 +87,11 @@ export default function ProjectDetail() {
 
   const handleDeleteDoc = async (docId) => {
     if (!confirm("Delete this document?")) return;
-    await deleteDocument(docId); loadAll();
+    try {
+      await deleteDocument(docId); loadAll();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   if (loading) return <div className="spinner" />;

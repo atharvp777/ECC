@@ -173,7 +173,11 @@ const [reingesting, setReingesting] = useState(null);
 
   const handleDelete = async (id) => {
     if (!confirm("Delete this document?")) return;
-    await deleteDocument(id); load();
+    try {
+      await deleteDocument(id); load();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   const handleReingest = async (id) => {

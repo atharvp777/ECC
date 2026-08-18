@@ -24,16 +24,24 @@ const [active, setActive]     = useState(null);
   useEffect(() => { load(); }, []);
 
   const newNote = async () => {
-    const note = await createNote({ title: "Untitled Note", content: "" });
-    await load();
-    setActive(note);
+    try {
+      const note = await createNote({ title: "Untitled Note", content: "" });
+      await load();
+      setActive(note);
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   const handleDelete = async (id) => {
     if (!confirm("Delete this note?")) return;
-    await deleteNote(id);
-    setActive(null);
-    load();
+    try {
+      await deleteNote(id);
+      setActive(null);
+      load();
+    } catch (err) {
+      alert("Failed: " + (err.response?.data?.detail || err.message));
+    }
   };
 
   const autoSave = (field, value) => {
