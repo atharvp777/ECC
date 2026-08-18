@@ -51,6 +51,7 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     messages = [
         {"role": m.role, "content": m.content}
         for m in payload.messages
+        if m.role in ("user", "assistant")
     ]
 
     try:
