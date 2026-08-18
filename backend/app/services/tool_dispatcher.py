@@ -19,6 +19,7 @@ from app.services.tools import (
     add_task_to_calendar as atc,
     remove_task_from_calendar as rtc,
     get_today_overview as gto,
+    plan_my_day as pmd,
     SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
@@ -41,6 +42,7 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "add_task_to_calendar": atc,
     "remove_task_from_calendar": rtc,
     "get_today_overview": gto,
+    "plan_my_day": pmd,
 }
 
 
@@ -264,6 +266,7 @@ def execute_tool(
             AddTaskToCalendarRequest,
             RemoveTaskFromCalendarRequest,
             GetTodayOverviewRequest,
+            PlanMyDayRequest,
         )
 
         request_models = {
@@ -283,6 +286,7 @@ def execute_tool(
             "add_task_to_calendar": AddTaskToCalendarRequest,
             "remove_task_from_calendar": RemoveTaskFromCalendarRequest,
             "get_today_overview": GetTodayOverviewRequest,
+            "plan_my_day": PlanMyDayRequest,
         }
 
         request_model = request_models.get(tool_name)
