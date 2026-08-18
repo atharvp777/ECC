@@ -56,3 +56,34 @@ class DayPlan(BaseModel):
     unscheduled_tasks: list[UnscheduledTask] = []
     unused_windows: list[UnusedWindow] = []
     summary: DayPlanSummary
+
+
+class ScheduledBlockOutcome(BaseModel):
+    """Result of attempting to schedule one approved block."""
+
+    task_id: int
+    title: str
+    start: datetime
+    end: datetime
+    # "scheduled" | "already_scheduled" | "skipped" | "failed"
+    status: str
+    reason: str | None = None
+    event_id: str | None = None
+
+
+class DayPlanApprovalResult(BaseModel):
+    """Structured result of applying an approved DayPlan to Google Calendar.
+
+    ``status`` is one of:
+      - "scheduled"    every block was written (or was already scheduled)
+      - "plan_changed" the plan was stale — a fresh_plan is returned instead
+      - "failed"       a write failed and the operation was compensated
+    """
+
+    plan_date: str
+    status: str = "scheduled"
+    plan_changed: bool = False
+    fresh_plan: DayPlan | None = None
+    outcomes: list[ScheduledBlockOutcome] = []
+    message: str | None = None
+    cleanup_failed_task_ids: list[int] = []

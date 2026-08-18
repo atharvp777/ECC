@@ -21,6 +21,7 @@ from app.services.tools import (
     get_today_overview as gto,
     plan_my_day as pmd,
     estimate_task_effort as etf,
+    apply_day_plan as adp,
     SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
@@ -45,6 +46,7 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "get_today_overview": gto,
     "plan_my_day": pmd,
     "estimate_task_effort": etf,
+    "apply_day_plan": adp,
 }
 
 
@@ -96,6 +98,8 @@ def execute_tool(
     args: dict,
     db: Session,
     user_message: Optional[str] = None,
+    last_assistant_reply: Optional[str] = None,
+    explicit_authorization: bool = False,
 ) -> Dict[str, Any]:
     """
     Dispatch a tool call.
@@ -107,11 +111,38 @@ def execute_tool(
     from natural language. For add_task_to_calendar / remove_task_from_calendar
     it is the authoritative task reference — the planner may choose the
     operation (and time) but must not paraphrase/generalize the task title.
+
+    ``last_assistant_reply`` and ``explicit_authorization`` support the
+    server-side authorization gate for apply_day_plan: the user's conversational
+    message must explicitly authorize calendar writes (a /tool directive counts
+    as explicit authorization).
     """
     tool_func = TOOL_FUNCTIONS.get(tool_name)
 
     if not tool_func:
         return {"data": {"error": f"Unknown tool: {tool_name}"}}
+
+    # ---- apply_day_plan: server-side authorization gate --------------------
+    # Explicit user approval is enforced here, not only in the planner prompt.
+    # A recommendation request, an ambiguous message, or a bare "okay" without
+    # a prior confirmation question can never reach the calendar write path.
+    if tool_name == "apply_day_plan":
+        from app.services.day_plan_approval import is_scheduling_authorization
+
+        authorized = explicit_authorization or is_scheduling_authorization(
+            user_message or "", last_assistant_reply
+        )
+        if not authorized:
+            return {
+                "data": {
+                    "error": (
+                        "I'll add these blocks to your Google Calendar only "
+                        "after you confirm. Do you want me to add this plan "
+                        "to your Google Calendar?"
+                    ),
+                    "reply_direct": True,
+                }
+            }
 
     try:
         args = dict(args or {})
@@ -294,6 +325,7 @@ def execute_tool(
             GetTodayOverviewRequest,
             PlanMyDayRequest,
             EstimateTaskEffortRequest,
+            ApplyDayPlanRequest,
         )
 
         request_models = {
@@ -315,6 +347,7 @@ def execute_tool(
             "get_today_overview": GetTodayOverviewRequest,
             "plan_my_day": PlanMyDayRequest,
             "estimate_task_effort": EstimateTaskEffortRequest,
+            "apply_day_plan": ApplyDayPlanRequest,
         }
 
         request_model = request_models.get(tool_name)

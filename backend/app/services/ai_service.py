@@ -242,6 +242,53 @@ def _render_effort_estimate(data) -> str:
     )
 
 
+def _render_day_plan_approval(data) -> str:
+    """Render the result of applying an approved DayPlan.
+
+    Only ever claims events were created when the backend actually created
+    them. Covers the three states: scheduled, plan_changed (stale), failed.
+    """
+    if getattr(data, "plan_changed", False) or getattr(data, "status", "") == "plan_changed":
+        plan_text = _render_day_plan_text(data.fresh_plan) if getattr(data, "fresh_plan", None) else ""
+        return (
+            "Your schedule has changed since I generated that plan. I refreshed "
+            f"it — here's the updated plan:\n{plan_text}\nSchedule this one?"
+        )
+    if getattr(data, "status", "") == "failed":
+        lines = [
+            "I couldn't schedule the plan — no calendar events were created "
+            "for this approval."
+        ]
+        if getattr(data, "message", None):
+            lines.append(f"Reason: {data.message}.")
+        if getattr(data, "cleanup_failed_task_ids", None):
+            lines.append(
+                "Note: events created moments ago could not be cleaned up for "
+                f"task ids: {', '.join(str(i) for i in data.cleanup_failed_task_ids)}."
+            )
+        return " ".join(lines)
+    scheduled = [o for o in data.outcomes if o.status == "scheduled"]
+    already = [o for o in data.outcomes if o.status == "already_scheduled"]
+    skipped = [o for o in data.outcomes if o.status == "skipped"]
+    failed = [o for o in data.outcomes if o.status == "failed"]
+    lines = []
+    if scheduled:
+        lines.append("Added these blocks to your Google Calendar:")
+        lines.extend(f"  {o.start:%H:%M}-{o.end:%H:%M}  {o.title}" for o in scheduled)
+    if already:
+        lines.append("Already on your calendar (no duplicates created):")
+        lines.extend(f"  {o.start:%H:%M}-{o.end:%H:%M}  {o.title}" for o in already)
+    if skipped:
+        lines.append("Could not schedule:")
+        lines.extend(f"  {o.title} — {o.reason}" for o in skipped)
+    if failed:
+        lines.append("Scheduling failed:")
+        lines.extend(f"  {o.title} — {o.reason}" for o in failed)
+    if not lines:
+        return "The approved plan had nothing to schedule, so nothing was created."
+    return "\n".join(lines)
+
+
 def _is_reschedule_request(text: str) -> bool:
     """True when the user asked to MOVE/RESCHEDULE a task's calendar event.
 
@@ -891,6 +938,15 @@ Arguments:
   "task_id": "integer ONLY when the context lists that exact task with its ID
               and you are certain it is the one the user means; otherwise null."}}
 
+19. apply_day_plan  (DESTRUCTIVE / EXTERNAL ACTION — writes to Google Calendar)
+Use ONLY when the user EXPLICITLY confirms they want the recommended day plan
+added to their Google Calendar. The backend independently re-validates and
+refreshes the plan before writing. Never call it for a recommendation-only
+request. Scheduling a task never completes it.
+Arguments:
+{{"date": "the plan's date in YYYY-MM-DD (usually today — copy it from the
+  recommended plan); null to default to today."}}
+
 RULES:
 
 - For CURRENT-STATE planning questions ("what should I focus on today", "what
@@ -919,6 +975,19 @@ RULES:
     update_task: copy the task reference VERBATIM from the LAST ASSISTANT REPLY
     and pass the proposed minutes value in estimated_minutes.
   - NEVER pass a value over 1440 minutes.
+- apply_day_plan SCHEDULING RULES (calendar writes — the strictest gate):
+  - Call apply_day_plan ONLY when the user's latest message clearly
+    authorizes scheduling the CURRENT plan: "schedule it", "put that plan on
+    my calendar", "add those blocks to my calendar", "yes, schedule the
+    recommended plan".
+  - NEVER call apply_day_plan for recommendation-only requests: "plan my
+    day", "what should I do today?", "what would my schedule look like?",
+    "can you suggest a schedule?".
+  - A bare "okay"/"yes" after the assistant asked "do you want me to add this
+    plan to your calendar?" is an explicit approval.
+  - If intent is ambiguous, return NONE so the assistant asks for explicit
+    confirmation — never assume permission.
+  - apply_day_plan only schedules; it never marks a task done.
 
 - Return NONE if the user is only asking a general question.
 - Return a tool call if the user clearly wants an action.
@@ -1448,11 +1517,21 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
         # ---- 3️⃣ Execute the tool -------------------------------------------
         try:
+            last_assistant_reply = next(
+                (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
+                None,
+            )
             result = execute_tool(
                 tool_name,
                 args,
                 db,
                 user_message=last_user if planned_tool_call else None,
+                last_assistant_reply=last_assistant_reply,
+                # A /tool apply_day_plan directive is the user literally invoking
+                # the mutation — that is explicit authorization in itself.
+                explicit_authorization=(
+                    not planned_tool_call and tool_name == "apply_day_plan"
+                ),
             )
             # Handle tool execution errors before trying to render the result.
             data = result.get("data")
@@ -1470,6 +1549,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                     "complete_task",
                     "delete_task",
                     "estimate_task_effort",
+                    "apply_day_plan",
                 )
             ):
                 return data["error"]
@@ -1558,6 +1638,8 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             "remove_task_from_calendar": lambda: _render_task_calendar_removed(data),
 
             "estimate_task_effort": lambda: _render_effort_estimate(data),
+
+            "apply_day_plan": lambda: _render_day_plan_approval(data),
         }
 
             # Only claim a calendar event was created after the API returned a

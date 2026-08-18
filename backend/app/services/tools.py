@@ -161,6 +161,16 @@ class EstimateTaskEffortRequest(BaseModel):
     task_title: Optional[str] = None  # user's verbatim reference; resolved server-side
 
 
+class ApplyDayPlanRequest(BaseModel):
+    """Explicit approval to schedule the recommended DayPlan on Google Calendar.
+
+    The tool regenerates the plan from authoritative state and never trusts a
+    client-supplied schedule. ``date`` names the plan's day (defaults to today);
+    only the current IST calendar day is supported for now.
+    """
+    date: Optional[str] = None  # YYYY-MM-DD; default = today
+
+
 # ---------- Calendar event body resolution (deterministic, server-side) ----------
 # The system timezone is UTC+05:30. The planner never guesses "now"; it passes a
 # natural-language `when` phrase and the server resolves the concrete datetime.
@@ -1036,8 +1046,43 @@ def plan_my_day(db: Session, req: PlanMyDayRequest) -> Dict[str, Any]:
     """
     from app.services.planning_service import get_today_overview as build_today_overview
     from app.services.day_planner import build_day_plan
+    from app.services.day_plan_approval import remember_presented_plan
 
-    return {"data": build_day_plan(build_today_overview(db))}
+    plan = build_day_plan(build_today_overview(db))
+    # Remember what was just presented so an explicit approval can be checked
+    # for freshness before any calendar write happens.
+    remember_presented_plan(plan)
+    return {"data": plan}
+
+
+def apply_day_plan(db: Session, req: ApplyDayPlanRequest) -> Dict[str, Any]:
+    """Explicitly schedule the APPROVED DayPlan on Google Calendar.
+
+    This is the only calendar-mutating planning tool. It requires explicit
+    user confirmation (enforced server-side by the dispatcher), regenerates
+    the plan from authoritative state, validates every block, and creates the
+    Google Calendar events through the existing write path. Tasks are never
+    marked done by scheduling.
+    """
+    from app.core.timeutil import SYSTEM_TIMEZONE
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    today = _dt.now(ZoneInfo(SYSTEM_TIMEZONE)).date().isoformat()
+    plan_date = (req.date or "").strip() or today
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", plan_date):
+        return {"data": {"error": f'Invalid date "{req.date}". Use YYYY-MM-DD.'}}
+    if plan_date != today:
+        return {
+            "data": {
+                "error": "I can only schedule today's plan right now. "
+                         "Re-plan today to schedule it.",
+            }
+        }
+
+    from app.services.day_plan_approval import apply_approved_plan
+
+    return {"data": apply_approved_plan(db, plan_date)}
 
 
 def estimate_task_effort(db: Session, req: EstimateTaskEffortRequest) -> Dict[str, Any]:
