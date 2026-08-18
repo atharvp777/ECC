@@ -47,7 +47,7 @@ def test_project_and_task_queries():
     db.commit()
     db.refresh(proj)
 
-    task = Task(title="test_task", priority="MEDIUM", status="todo", project_id=proj.id)
+    task = Task(title="test_task", priority="medium", status="todo", project_id=proj.id)
     db.add(task)
     db.commit()
     db.refresh(task)

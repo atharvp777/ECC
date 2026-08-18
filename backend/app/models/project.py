@@ -28,10 +28,20 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     category: Mapped[ProjectCategory] = mapped_column(
-        SAEnum(ProjectCategory), default=ProjectCategory.PERSONAL
+        SAEnum(
+            ProjectCategory,
+            values_callable=lambda x: [e.value for e in x],
+            validate_strings=True,
+        ),
+        default=ProjectCategory.PERSONAL,
     )
     status: Mapped[ProjectStatus] = mapped_column(
-        SAEnum(ProjectStatus), default=ProjectStatus.ACTIVE
+        SAEnum(
+            ProjectStatus,
+            values_callable=lambda x: [e.value for e in x],
+            validate_strings=True,
+        ),
+        default=ProjectStatus.ACTIVE,
     )
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     color: Mapped[str] = mapped_column(String(7), default="#6366f1")  # Hex color for UI

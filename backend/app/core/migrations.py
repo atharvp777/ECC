@@ -16,8 +16,8 @@ _TASK_COLUMNS = {
     "scheduled_start": "scheduled_start DATETIME",
     "scheduled_end": "scheduled_end DATETIME",
     "calendar_sync_error": "calendar_sync_error TEXT",
-    # Task type: WORK | REMINDER | MEETING (meetings are stored as tasks).
-    "task_type": "task_type VARCHAR(20) NOT NULL DEFAULT 'WORK'",
+    # Task type: work | reminder | meeting (meetings are stored as tasks).
+    "task_type": "task_type VARCHAR(20) NOT NULL DEFAULT 'work'",
 }
 
 

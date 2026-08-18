@@ -38,14 +38,14 @@ def db_session():
 
 
 def _project(db, name="Proj"):
-    p = Project(name=name, category="personal", status="ACTIVE")
+    p = Project(name=name, category="personal", status="active")
     db.add(p)
     db.commit()
     db.refresh(p)
     return p
 
 
-def _task(db, title, *, project=None, deadline=None, priority="MEDIUM", status="TODO"):
+def _task(db, title, *, project=None, deadline=None, priority="medium", status="todo"):
     t = Task(
         title=title,
         priority=priority,
@@ -87,7 +87,7 @@ def test_bulk_all_open_scoped_to_project(db_session):
     proj_a = _project(db_session, "A")
     proj_b = _project(db_session, "B")
     a1 = _task(db_session, "a1", project=proj_a)
-    a2 = _task(db_session, "a2", project=proj_a, status="DONE")
+    a2 = _task(db_session, "a2", project=proj_a, status="done")
     b1 = _task(db_session, "b1", project=proj_b)
 
     result = _bulk(db_session, scope="all_open", project_id=proj_a.id, status="done")
@@ -115,8 +115,8 @@ def test_bulk_overdue_scope(db_session):
 
 def test_bulk_critical_scope(db_session):
     proj = _project(db_session)
-    crit = _task(db_session, "crit", project=proj, priority="CRITICAL")
-    _task(db_session, "med", project=proj, priority="MEDIUM")
+    crit = _task(db_session, "crit", project=proj, priority="critical")
+    _task(db_session, "med", project=proj, priority="medium")
 
     result = _bulk(db_session, scope="critical", status="done")
 
@@ -215,7 +215,7 @@ def test_bulk_priority_and_deadline_update(db_session):
 
 def test_bulk_status_away_from_done_clears_completed_at(db_session):
     proj = _project(db_session)
-    t1 = _task(db_session, "A", project=proj, status="DONE")
+    t1 = _task(db_session, "A", project=proj, status="done")
 
     _bulk(db_session, task_ids=[t1.id], status="todo")
 

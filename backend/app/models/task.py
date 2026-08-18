@@ -37,13 +37,28 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     priority: Mapped[TaskPriority] = mapped_column(
-        SAEnum(TaskPriority), default=TaskPriority.MEDIUM
+        SAEnum(
+            TaskPriority,
+            values_callable=lambda x: [e.value for e in x],
+            validate_strings=True,
+        ),
+        default=TaskPriority.MEDIUM,
     )
     status: Mapped[TaskStatus] = mapped_column(
-        SAEnum(TaskStatus), default=TaskStatus.TODO
+        SAEnum(
+            TaskStatus,
+            values_callable=lambda x: [e.value for e in x],
+            validate_strings=True,
+        ),
+        default=TaskStatus.TODO,
     )
     task_type: Mapped[TaskType] = mapped_column(
-        SAEnum(TaskType), default=TaskType.WORK
+        SAEnum(
+            TaskType,
+            values_callable=lambda x: [e.value for e in x],
+            validate_strings=True,
+        ),
+        default=TaskType.WORK,
     )
 
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -99,7 +99,7 @@ def client(db_session):
 
 
 def _linked_task(db_session, title="Wiring"):
-    task = Task(title=title, priority="MEDIUM", google_calendar_event_id="evt_existing")
+    task = Task(title=title, priority="medium", google_calendar_event_id="evt_existing")
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
@@ -109,7 +109,7 @@ def _linked_task(db_session, title="Wiring"):
 def _qa_scheduled_task(db_session, linked=True):
     task = Task(
         title="QA scheduled task",
-        priority="MEDIUM",
+        priority="medium",
         google_calendar_event_id="evt_qa_scheduled" if linked else None,
     )
     db_session.add(task)
@@ -126,7 +126,7 @@ def test_schedule_task_creates_task_and_calendar_event(db_session):
     with patch.object(google_calendar, "create_calendar_event", return_value=created) as mock_create:
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Wiring",
-            priority="HIGH",
+            priority="high",
             when="tomorrow",
             start_time="16:00",
             duration_minutes=60,
@@ -154,7 +154,7 @@ def test_deadline_task_does_not_touch_calendar(db_session):
     with patch.object(google_calendar, "create_calendar_event") as mock_create:
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Finish report",
-            priority="MEDIUM",
+            priority="medium",
             deadline_when="Friday",
         ))
 
@@ -174,7 +174,7 @@ def test_calendar_failure_keeps_task_and_records_error(db_session):
     ):
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Wiring",
-            priority="MEDIUM",
+            priority="medium",
             when="tomorrow",
             schedule_on_calendar=True,
         ))
@@ -211,7 +211,7 @@ def test_update_linked_task_updates_event_not_insert(db_session):
 # E. Link existing task
 # ----------------------------------------------------------------------
 def test_add_task_to_calendar_links_existing_task(db_session):
-    task = Task(title="Wiring", priority="MEDIUM")
+    task = Task(title="Wiring", priority="medium")
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
@@ -277,7 +277,7 @@ def test_delete_event_best_effort_suppresses_google_errors(db_session):
 
 
 def test_router_delete_task_removes_task_even_when_google_fails(db_session, client):
-    task = Task(title="Wiring", priority="MEDIUM", google_calendar_event_id="evt_del")
+    task = Task(title="Wiring", priority="medium", google_calendar_event_id="evt_del")
     db_session.add(task)
     db_session.commit()
 
@@ -456,7 +456,7 @@ def test_chat_allows_create_task_with_schedule_on_calendar(db_session):
         with patch("app.services.ai_service.execute_tool") as mock_execute:
             task = Task(
                 title="Wiring",
-                priority="MEDIUM",
+                priority="medium",
                 google_calendar_event_id="evt_ok",
             )
             db_session.add(task)
@@ -492,7 +492,7 @@ def test_chat_reports_partial_success_honestly(db_session):
         with patch("app.services.ai_service.execute_tool") as mock_execute:
             task = Task(
                 title="Wiring",
-                priority="MEDIUM",
+                priority="medium",
                 calendar_sync_error="Google API unreachable",
             )
             db_session.add(task)
@@ -514,7 +514,7 @@ def test_chat_reports_partial_success_honestly(db_session):
 # Router: calendar link/unlink endpoints
 # ----------------------------------------------------------------------
 def test_router_post_calendar_links_task(db_session, client):
-    task = Task(title="Wiring", priority="MEDIUM")
+    task = Task(title="Wiring", priority="medium")
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
@@ -569,10 +569,10 @@ def test_router_delete_calendar_unlinks_but_keeps_task(db_session, client):
 #   - Wiring Diagram            (INCORRECTLY got linked before the fix)
 #   - Final Test
 def _seed_wiring_tasks(db_session):
-    t1 = Task(title="finish the BAJA wiring", priority="MEDIUM")
-    t2 = Task(title="work on the BAJA wiring", priority="MEDIUM")
-    t3 = Task(title="Wiring Diagram", priority="LOW")
-    t4 = Task(title="Final Test", priority="MEDIUM")
+    t1 = Task(title="finish the BAJA wiring", priority="medium")
+    t2 = Task(title="work on the BAJA wiring", priority="medium")
+    t3 = Task(title="Wiring Diagram", priority="low")
+    t4 = Task(title="Final Test", priority="medium")
     for t in (t1, t2, t3, t4):
         db_session.add(t)
     db_session.commit()
@@ -930,7 +930,7 @@ def test_chat_finish_request_resolves_finish_even_with_paraphrased_title(db_sess
 # N. Unspecified scheduling: never invent a date/time (Phase 1)
 # ----------------------------------------------------------------------
 def _unlinked_task(db_session, title="finish the BAJA wiring"):
-    task = Task(title=title, priority="MEDIUM")
+    task = Task(title=title, priority="medium")
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
@@ -999,7 +999,7 @@ def test_add_task_to_calendar_explicit_date_and_time(db_session):
 
 
 def test_task_deadline_alone_does_not_become_work_slot(db_session):
-    task = Task(title="finish the BAJA wiring", priority="MEDIUM",
+    task = Task(title="finish the BAJA wiring", priority="medium",
                 deadline=datetime(2026, 8, 25, 9, 0))
     db_session.add(task)
     db_session.commit()
@@ -1034,7 +1034,7 @@ def test_linked_task_update_with_explicit_schedule_remains_idempotent(db_session
 def test_create_task_schedule_without_time_does_not_create_event(db_session):
     with patch.object(google_calendar, "create_calendar_event") as mock_create:
         result = create_task_tool(db_session, CreateTaskRequest(
-            title="Wiring", priority="MEDIUM", schedule_on_calendar=True,
+            title="Wiring", priority="medium", schedule_on_calendar=True,
         ))
 
     task = result["data"]

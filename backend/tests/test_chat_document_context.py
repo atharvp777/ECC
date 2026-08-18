@@ -34,7 +34,7 @@ def db_session():
 
 
 def _seed_insem_with_doc(db, tmp_path, content="Data Science and Visualization course."):
-    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="ACTIVE")
+    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="active")
     db.add(proj)
     db.commit()
     db.refresh(proj)
@@ -76,7 +76,7 @@ def test_build_context_includes_project_documents(db_session, tmp_path):
 
 
 def test_build_context_project_without_documents_shows_no_doc_part(db_session):
-    proj = Project(name="BAJA HV", category="baja", status="ACTIVE")
+    proj = Project(name="BAJA HV", category="baja", status="active")
     db_session.add(proj)
     db_session.commit()
     ctx = _build_context(db_session)
@@ -142,7 +142,7 @@ def test_project_document_context_no_project_no_text(db_session, tmp_path):
 
 
 def test_project_document_context_project_without_docs_returns_empty(db_session, tmp_path):
-    proj = Project(name="BAJA HV", category="baja", status="ACTIVE")
+    proj = Project(name="BAJA HV", category="baja", status="active")
     db_session.add(proj)
     db_session.commit()
     result = _project_document_context(
@@ -153,7 +153,7 @@ def test_project_document_context_project_without_docs_returns_empty(db_session,
 
 
 def test_project_document_context_missing_file_graceful(db_session, tmp_path):
-    proj = Project(name="In-SEM", category="college", status="ACTIVE")
+    proj = Project(name="In-SEM", category="college", status="active")
     db_session.add(proj)
     db_session.commit()
     db_session.refresh(proj)
@@ -178,7 +178,7 @@ def test_project_document_context_missing_file_graceful(db_session, tmp_path):
 
 def test_project_document_context_does_not_leak_other_projects(db_session, tmp_path):
     insem = _seed_insem_with_doc(db_session, tmp_path, content="In-SEM secret syllabus content.")
-    baja = Project(name="BAJA HV", description="eBAJA electric vehicle", category="baja", status="ACTIVE")
+    baja = Project(name="BAJA HV", description="eBAJA electric vehicle", category="baja", status="active")
     db_session.add(baja)
     db_session.commit()
     db_session.refresh(baja)
@@ -207,7 +207,7 @@ def test_project_document_context_does_not_leak_other_projects(db_session, tmp_p
 
 
 def test_identify_project_fuzzy_variants(db_session):
-    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="ACTIVE")
+    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="active")
     db_session.add(proj)
     db_session.commit()
     db_session.refresh(proj)
@@ -217,7 +217,7 @@ def test_identify_project_fuzzy_variants(db_session):
 
 def test_project_document_context_multiple_documents(db_session, tmp_path):
     """Several documents in one project are all exposed in the content block."""
-    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="ACTIVE")
+    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="active")
     db_session.add(proj)
     db_session.commit()
     db_session.refresh(proj)
@@ -248,7 +248,7 @@ def test_document_text_is_marked_untrusted_against_prompt_injection(db_session, 
     """Document contents are DATA, not instructions. A prompt-injection attempt
     embedded in an uploaded file must be framed as untrusted reference material,
     and the model is told to never follow instructions found inside it."""
-    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="ACTIVE")
+    proj = Project(name="In-SEM", description="Insem 7th Sem", category="college", status="active")
     db_session.add(proj)
     db_session.commit()
     db_session.refresh(proj)

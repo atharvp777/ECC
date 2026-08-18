@@ -26,7 +26,7 @@ def db_session():
 
 
 def _project(db, name="Proj"):
-    p = Project(name=name, category="personal", status="ACTIVE")
+    p = Project(name=name, category="personal", status="active")
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -34,7 +34,7 @@ def _project(db, name="Proj"):
 
 
 def _task(db, title):
-    t = Task(title=title, priority="MEDIUM", status="TODO")
+    t = Task(title=title, priority="medium", status="todo")
     db.add(t)
     db.commit()
     db.refresh(t)

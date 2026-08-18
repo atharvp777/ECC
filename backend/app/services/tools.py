@@ -5,7 +5,7 @@ from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 import re
 from app.models import Project, Task, TaskStatus, TaskPriority
-from app.models.project import ProjectCategory
+from app.models.project import ProjectCategory, ProjectStatus
 from app.models.task import TaskType
 from app.core.timeutil import normalize_to_system
 from app.services.google_calendar import (
@@ -621,17 +621,19 @@ def _normalize_task_type(value: str | TaskType | None) -> TaskType:
     for member in TaskType:
         if normalized in {member.name.lower(), member.value.lower()}:
             return member
-    return TaskType.WORK
+    raise ValueError(
+        "Invalid task type. Use one of: work, reminder, meeting."
+    )
 
 
 def list_projects(db: Session, req: ListProjectsRequest) -> Dict[str, Any]:
-    projects = db.query(Project).filter(Project.status == "ACTIVE").all()
+    projects = db.query(Project).filter(Project.status == ProjectStatus.ACTIVE).all()
     return {"data": projects}
 
 
 def create_project(db: Session, req: CreateProjectRequest) -> Dict[str, Any]:
     category = _normalize_project_category(req.category)
-    proj = Project(name=req.name, category=category, status="ACTIVE")
+    proj = Project(name=req.name, category=category, status=ProjectStatus.ACTIVE)
     db.add(proj)
     db.commit()
     db.refresh(proj)
@@ -666,13 +668,19 @@ def create_task(db: Session, req: CreateTaskRequest) -> Dict[str, Any]:
     elif getattr(req, "deadline_when", None):
         deadline = resolve_deadline(req.deadline_when)
 
+    try:
+        priority = _normalize_task_priority(req.priority)
+        task_type = _normalize_task_type(getattr(req, "task_type", None))
+    except ValueError as exc:
+        return {"data": {"error": str(exc)}}
+
     if req.project_id is not None and not _project_exists(db, req.project_id):
         return {"data": {"error": f"Project not found: {req.project_id}"}}
 
     task = Task(
         title=req.title,
-        priority=req.priority,
-        task_type=_normalize_task_type(getattr(req, "task_type", None)),
+        priority=priority,
+        task_type=task_type,
         deadline=deadline,
         project_id=req.project_id,
     )
@@ -729,8 +737,16 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     title_changed = "title" in update_data
     schedule_changed = "scheduled_start" in update_data or "scheduled_end" in update_data
 
-    if "task_type" in update_data:
-        update_data["task_type"] = _normalize_task_type(update_data["task_type"])
+    for key, normalizer in (
+        ("status", _normalize_task_status),
+        ("priority", _normalize_task_priority),
+        ("task_type", _normalize_task_type),
+    ):
+        if key in update_data:
+            try:
+                update_data[key] = normalizer(update_data[key])
+            except ValueError as exc:
+                return {"data": {"error": str(exc)}}
 
     for field, value in update_data.items():
         if field == "deadline" and value is not None:
@@ -762,7 +778,7 @@ def complete_task(db: Session, req: CompleteTaskRequest) -> Dict[str, Any]:
     task = db.query(Task).filter(Task.id == req.task_id).first()
     if not task:
         return {"data": None}
-    task.status = "DONE"
+    task.status = TaskStatus.DONE
     task.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(task)

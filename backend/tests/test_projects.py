@@ -54,8 +54,8 @@ def _add_task(db, project_id, status=TaskStatus.TODO):
 def test_project_list_exposes_done_tasks_and_task_count(client):
     test_client, db = client
 
-    p1 = Project(name="BAJA HV", category="baja", status="ACTIVE")
-    p2 = Project(name="dMAT", category="personal", status="ACTIVE")
+    p1 = Project(name="BAJA HV", category="baja", status="active")
+    p2 = Project(name="dMAT", category="personal", status="active")
     db.add_all([p1, p2])
     db.commit()
     db.refresh(p1)
@@ -79,7 +79,7 @@ def test_project_list_exposes_done_tasks_and_task_count(client):
 def test_project_list_zero_task_project_shows_zero_progress(client):
     test_client, db = client
 
-    p = Project(name="Empty", category="personal", status="ACTIVE")
+    p = Project(name="Empty", category="personal", status="active")
     db.add(p)
     db.commit()
 
@@ -94,7 +94,7 @@ def test_project_list_zero_task_project_shows_zero_progress(client):
 def test_project_list_preserves_existing_fields(client):
     test_client, db = client
 
-    p = Project(name="Fields", category="college", status="ACTIVE", color="#112233")
+    p = Project(name="Fields", category="college", status="active", color="#112233")
     db.add(p)
     db.commit()
 

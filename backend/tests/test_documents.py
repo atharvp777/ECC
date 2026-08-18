@@ -101,7 +101,7 @@ def test_upload_rejects_nonexistent_project(client):
 def test_upload_accepts_existing_project(client):
     test_client, db, uploads = client
 
-    project = Project(name="BAJA HV", category="baja", status="ACTIVE")
+    project = Project(name="BAJA HV", category="baja", status="active")
     db.add(project)
     db.commit()
     db.refresh(project)

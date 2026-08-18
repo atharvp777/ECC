@@ -194,7 +194,7 @@ def test_chat_explicit_create_task_path(db_session):
         # Create a Task object to be returned by execute_tool
         task = Task(
             title="TestTask",
-            priority="MEDIUM",
+            priority="medium",
             deadline=datetime(2025, 1, 1, 0, 0, 0),
             project_id=proj.id,
         )
@@ -229,7 +229,7 @@ def test_chat_tool_execution_result_is_user_facing(db_session):
 
     # Create a Task object that will be returned by execute_tool
     task = Task(id=1)
-    task.status = "DONE"
+    task.status = "done"
 
     with patch("app.services.ai_service.Groq") as mock_groq:
         mock_client = MagicMock()
@@ -259,10 +259,10 @@ def chat_api_client():
     db = Session()
 
     # Seed a non-target project first so IDs are not all 1.
-    db.add(Project(name="Placeholder", category="personal", status="ACTIVE"))
-    db.add(Project(name="BAJA HV", category="baja", status="ACTIVE"))
-    db.add(Project(name="dMAT", category="personal", status="ACTIVE"))
-    db.add(Project(name="Demo 1", category="personal", status="ACTIVE"))
+    db.add(Project(name="Placeholder", category="personal", status="active"))
+    db.add(Project(name="BAJA HV", category="baja", status="active"))
+    db.add(Project(name="dMAT", category="personal", status="active"))
+    db.add(Project(name="Demo 1", category="personal", status="active"))
     db.commit()
 
     def override_get_db():

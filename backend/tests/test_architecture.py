@@ -104,7 +104,7 @@ def test_meeting_with_time_creates_task_and_calendar_event(db_session):
     with patch.object(google_calendar, "create_calendar_event", return_value=created) as mock_create:
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Meeting with Prof X",
-            priority="MEDIUM",
+            priority="medium",
             task_type="meeting",
             when="tomorrow",
             start_time="16:00",
@@ -126,7 +126,7 @@ def test_meeting_reminder_creates_task_without_calendar_event(db_session):
     # ever invented (the server asks for a time instead).
     result = create_task_tool(db_session, CreateTaskRequest(
         title="Meeting with Prof X",
-        priority="MEDIUM",
+        priority="medium",
         task_type="meeting",
         when=None,
         schedule_on_calendar=False,
@@ -182,7 +182,7 @@ def test_deadline_only_task_creates_no_event(db_session):
     with patch.object(google_calendar, "create_calendar_event") as mock_create:
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Submit report",
-            priority="MEDIUM",
+            priority="medium",
             deadline_when="Friday",
             schedule_on_calendar=False,
         ))
@@ -198,7 +198,7 @@ def test_scheduled_task_creates_event(db_session):
     with patch.object(google_calendar, "create_calendar_event", return_value=created):
         result = create_task_tool(db_session, CreateTaskRequest(
             title="Work on wiring",
-            priority="MEDIUM",
+            priority="medium",
             when="tomorrow",
             start_time="10:00",
             duration_minutes=90,

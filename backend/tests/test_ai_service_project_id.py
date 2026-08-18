@@ -20,14 +20,14 @@ def db_session():
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
     # Create a project with a known ID (will be 1)
-    p = Project(name="BAJA HV", category="BAJA", status="ACTIVE")
+    p = Project(name="BAJA HV", category="baja", status="active")
     db.add(p)
     db.commit()
     # Create a task linked to that project
     task = Task(
         title="Design chassis",
         deadline=datetime(2025, 1, 1, tzinfo=timezone.utc),
-        priority="HIGH",
+        priority="high",
         project_id=p.id,
     )
     db.add(task)
@@ -156,7 +156,7 @@ def test_execute_tool_resolves_project_name_to_project_id(db_session):
     """The dispatcher must resolve project_name to the correct project_id."""
     from app.services.tool_dispatcher import execute_tool
 
-    dmat = Project(name="dMAT", category="personal", status="ACTIVE")
+    dmat = Project(name="dMAT", category="personal", status="active")
     db_session.add(dmat)
     db_session.commit()
     db_session.refresh(dmat)
@@ -179,8 +179,8 @@ def test_execute_tool_prefers_exact_case_match(db_session):
     """Exact project-name matches should win when case variants both exist."""
     from app.services.tool_dispatcher import execute_tool
 
-    lower = Project(name="dmat", category="personal", status="ACTIVE")
-    upper = Project(name="dMAT", category="personal", status="ACTIVE")
+    lower = Project(name="dmat", category="personal", status="active")
+    upper = Project(name="dMAT", category="personal", status="active")
     db_session.add_all([lower, upper])
     db_session.commit()
     db_session.refresh(lower)
@@ -204,7 +204,7 @@ def test_execute_tool_accepts_valid_direct_project_id(db_session):
     """Direct task tool calls with a valid project_id should still work."""
     from app.services.tool_dispatcher import execute_tool
 
-    project = Project(name="Demo 1", category="personal", status="ACTIVE")
+    project = Project(name="Demo 1", category="personal", status="active")
     db_session.add(project)
     db_session.commit()
     db_session.refresh(project)
@@ -301,9 +301,9 @@ def test_create_task_handles_deadline_none(db_session):
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine)
     db = SessionLocal()
-    proj = db.query(Project).filter(Project.status == "ACTIVE").first()
+    proj = db.query(Project).filter(Project.status == "active").first()
     if not proj:
-        proj = Project(name="TestProj", category="PERSONAL", status="ACTIVE")
+        proj = Project(name="TestProj", category="personal", status="active")
         db.add(proj)
         db.commit()
     # Prepare args for create_task with deadline=None

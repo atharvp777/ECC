@@ -309,16 +309,16 @@ def _build_context(db: Session) -> str:
         f"\n--- LIVE CONTEXT (as of {now.strftime('%Y-%m-%d %H:%M %Z')}, {SYSTEM_TIMEZONE}) ---\n"
     ]
 
-    from app.models.project import Project
-    from app.models.task import Task
+    from app.models.project import Project, ProjectStatus
+    from app.models.task import Task, TaskStatus, TaskPriority
     from app.models.note import Note
 
-    projects = db.query(Project).filter(Project.status == "ACTIVE").all()
+    projects = db.query(Project).filter(Project.status == ProjectStatus.ACTIVE).all()
     if projects:
         lines.append("## Active Projects")
         for p in projects:
             task_count = len(p.tasks)
-            done = sum(1 for t in p.tasks if t.status == "DONE")
+            done = sum(1 for t in p.tasks if t.status == TaskStatus.DONE)
             desc = f" | Description: {p.description}" if p.description else ""
             doc_part = ""
             if p.documents:
@@ -334,7 +334,7 @@ def _build_context(db: Session) -> str:
 
     overdue = (
         db.query(Task)
-        .filter(Task.deadline < now, Task.status != "DONE")
+        .filter(Task.deadline < now, Task.status != TaskStatus.DONE)
         .order_by(Task.deadline.asc())
         .limit(10)
         .all()
@@ -352,7 +352,7 @@ def _build_context(db: Session) -> str:
     week_end = now + timedelta(days=7)
     upcoming = (
         db.query(Task)
-        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != "DONE")
+        .filter(Task.deadline >= now, Task.deadline <= week_end, Task.status != TaskStatus.DONE)
         .order_by(Task.deadline.asc())
         .limit(15)
         .all()
@@ -367,7 +367,7 @@ def _build_context(db: Session) -> str:
 
     critical = (
         db.query(Task)
-        .filter(Task.priority == "CRITICAL", Task.status != "DONE")
+        .filter(Task.priority == TaskPriority.CRITICAL, Task.status != TaskStatus.DONE)
         .limit(5)
         .all()
     )
@@ -624,7 +624,7 @@ Use for a task or todo, including a task the user wants to work on at a
 scheduled time, and for MEETINGS (a meeting is a task with task_type="meeting").
 Arguments:
 {{"title": "string",
-  "priority": "LOW | MEDIUM | HIGH | CRITICAL",
+  "priority": "critical | high | medium | low (default 'medium')",
   "task_type": "work | reminder | meeting (default 'work'; use 'meeting' for
                 meetings, 'reminder' for simple reminders)",
   "deadline_when": "the user's DUE-DATE phrase passed VERBATIM, e.g. 'Friday',
@@ -866,7 +866,7 @@ NONE
 or:
 
 {{"tool":"create_task","args":{{"title":"Check battery wiring",
-"priority":"MEDIUM","deadline":null,"project_name":"BAJA HV"}}}}
+"priority":"medium","deadline":null,"project_name":"BAJA HV"}}}}
 
 or for a calendar event:
 

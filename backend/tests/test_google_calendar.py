@@ -262,7 +262,7 @@ def db_session():
 
 
 def _task(db, **kwargs):
-    t = Task(title="Wind test", priority="MEDIUM", status="TODO", **kwargs)
+    t = Task(title="Wind test", priority="medium", status="todo", **kwargs)
     db.add(t)
     db.commit()
     db.refresh(t)
