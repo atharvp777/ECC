@@ -14,6 +14,7 @@ from app.routers import (
     notes,
     documents,
     dashboard,
+    planning,
     chat,
     knowledge,
     integrations,
@@ -61,6 +62,7 @@ app.include_router(tasks.router)
 app.include_router(notes.router)
 app.include_router(documents.router)
 app.include_router(dashboard.router)
+app.include_router(planning.router)
 app.include_router(chat.router)
 app.include_router(knowledge.router)
 app.include_router(integrations.router)
