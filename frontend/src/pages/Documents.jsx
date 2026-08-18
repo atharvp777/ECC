@@ -6,6 +6,7 @@ const ICONS = {
   "application/pdf": FileText,
   "image/png": FileImage,
   "image/jpeg": FileImage,
+  "image/webp": FileImage,
 };
 
 function FileIcon({ type }) {
@@ -204,7 +205,7 @@ const [reingesting, setReingesting] = useState(null);
             <Search size={14} /> Search Docs
           </button>
           <input ref={inputRef} type="file" style={{ display: "none" }} onChange={handleUpload}
-            accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg" />
+            accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg,.webp" />
           <button className="btn btn-primary" onClick={() => inputRef.current.click()} disabled={uploading}>
             <Upload size={14} /> {uploading ? "Uploading…" : "Upload"}
           </button>

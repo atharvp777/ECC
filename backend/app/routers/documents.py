@@ -20,6 +20,7 @@ ALLOWED_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "image/png",
     "image/jpeg",
+    "image/webp",
 }
 
 MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB

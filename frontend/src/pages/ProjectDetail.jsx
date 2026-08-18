@@ -222,7 +222,7 @@ export default function ProjectDetail() {
           <div className="section-header" style={{ marginBottom: 12 }}>
             <span style={{ fontSize: 14, fontWeight: 600 }}>Documents</span>
             <input ref={inputRef} type="file" style={{ display: "none" }} onChange={handleUpload}
-              accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg" />
+              accept=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg,.webp" />
             <button className="btn btn-primary btn-sm" onClick={() => inputRef.current.click()} disabled={uploading}>
               <Upload size={12} /> {uploading ? "Uploading…" : "Upload"}
             </button>

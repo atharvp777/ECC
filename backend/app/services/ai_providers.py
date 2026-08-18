@@ -100,15 +100,37 @@ def _groq_messages(
     return list(messages)
 
 
-def _gemini_contents(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """Convert {role, content} messages to Gemini Content parts."""
-    contents = [
-        {
-            "role": "model" if message.get("role") == "assistant" else "user",
-            "parts": [{"text": message.get("content", "")}],
-        }
-        for message in messages
-    ]
+def _gemini_contents(
+    messages: List[Dict[str, str]],
+    images: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Convert {role, content} messages to Gemini Content parts.
+
+    When ``images`` is provided, each image is attached as an
+    ``{"inline_data": {"mime_type", "data"}}`` part on the LAST user message
+    (the current turn), next to that turn's text. Never attaches to an
+    assistant turn.
+    """
+    images = images or []
+    last_user_index = None
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            last_user_index = index
+
+    contents = []
+    for index, message in enumerate(messages):
+        parts: List[Dict[str, Any]] = [{"text": message.get("content", "")}]
+        if images and index == last_user_index:
+            parts.extend(
+                {"inline_data": {"mime_type": image["mime_type"], "data": image["data"]}}
+                for image in images
+            )
+        contents.append(
+            {
+                "role": "model" if message.get("role") == "assistant" else "user",
+                "parts": parts,
+            }
+        )
     if not contents:
         contents = [{"role": "user", "parts": [{"text": ""}]}]
     return contents
@@ -141,6 +163,7 @@ def _gemini_complete(
     max_tokens: int,
     temperature: float,
     json_mode: bool = False,
+    images: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     from google.genai import types
 
@@ -154,7 +177,7 @@ def _gemini_complete(
         config_kwargs["response_mime_type"] = "application/json"
     response = client.models.generate_content(
         model=settings.AI_MODEL,
-        contents=_gemini_contents(messages),
+        contents=_gemini_contents(messages, images),
         config=types.GenerateContentConfig(**config_kwargs),
     )
     return getattr(response, "text", None)
@@ -238,3 +261,54 @@ def complete_text(
     except Exception as exc:
         logger.warning("AI provider '%s' failed: %s", provider, exc)
         raise _normalize_provider_error(provider, exc) from exc
+
+
+VISION_UNAVAILABLE_MESSAGE = (
+    "These images are uploaded, but the current AI provider cannot inspect "
+    "image content."
+)
+
+
+def supports_vision() -> bool:
+    """True when the configured provider can actually see image contents.
+
+    Gemini models accept inline image input; Groq's text-only models do not.
+    """
+    return settings.AI_PROVIDER == "gemini"
+
+
+def complete_text_multimodal(
+    *,
+    system: Optional[str] = None,
+    messages: Optional[List[Dict[str, str]]] = None,
+    images: Optional[List[Dict[str, Any]]] = None,
+    max_tokens: int = 1024,
+    temperature: float = 0.7,
+) -> str:
+    """Generate text from text + inline images via a vision-capable provider.
+
+    ``images`` is a list of ``{"mime_type": str, "data": bytes}``. The image
+    bytes are only ever sent to a provider that can actually inspect them;
+    when the configured provider cannot see images, ``AIProviderError`` is
+    raised with ``VISION_UNAVAILABLE_MESSAGE`` so callers answer honestly
+    instead of pretending inspection happened. With no images this is exactly
+    ``complete_text``.
+    """
+    messages = messages or []
+    images = images or []
+    if not images:
+        return complete_text(
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    if settings.AI_PROVIDER != "gemini":
+        raise AIProviderError(VISION_UNAVAILABLE_MESSAGE)
+    try:
+        return _gemini_complete(system, messages, max_tokens, temperature, images=images)
+    except AIProviderError:
+        raise
+    except Exception as exc:
+        logger.warning("Gemini multimodal completion failed: %s", exc)
+        raise _normalize_provider_error("gemini", exc) from exc

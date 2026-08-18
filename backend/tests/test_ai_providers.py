@@ -199,3 +199,78 @@ def test_groq_provider_still_works(monkeypatch):
         )
     assert text == client.chat.completions.create.return_value.choices[0].message.content
     assert mock_groq.call_args.kwargs["api_key"] == "gsk-test"
+
+
+# ----------------------------------------------------------------------
+# Vision support & multimodal (text + inline image) generation
+# ----------------------------------------------------------------------
+def test_supports_vision_gemini_true(gemini_env):
+    assert ai_providers.supports_vision() is True
+
+
+def test_supports_vision_groq_false(monkeypatch):
+    monkeypatch.setattr(settings, "AI_PROVIDER", "groq")
+    assert ai_providers.supports_vision() is False
+
+
+def test_multimodal_without_images_delegates_to_text(gemini_env, mock_gemini_client):
+    mock_gemini_client.models.generate_content.return_value = _mock_gemini_response("plain reply")
+    text = ai_providers.complete_text_multimodal(
+        system="s",
+        messages=[{"role": "user", "content": "hi"}],
+        images=[],
+    )
+    assert text == "plain reply"
+    contents = mock_gemini_client.models.generate_content.call_args.kwargs["contents"]
+    assert contents[0]["parts"] == [{"text": "hi"}]
+
+
+def test_multimodal_attaches_inline_images_to_last_user_turn(gemini_env, mock_gemini_client):
+    mock_gemini_client.models.generate_content.return_value = _mock_gemini_response("I see a diagram")
+    ai_providers.complete_text_multimodal(
+        system="s",
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "user", "content": "what does the image show"},
+        ],
+        images=[
+            {"mime_type": "image/png", "data": b"\x89PNG\r\n\x1a\n"},
+            {"mime_type": "image/jpeg", "data": b"\xff\xd8\xff"},
+        ],
+    )
+    contents = mock_gemini_client.models.generate_content.call_args.kwargs["contents"]
+    assert contents[-1]["role"] == "user"
+    assert contents[-1]["parts"][0]["text"] == "what does the image show"
+    assert contents[-1]["parts"][1] == {
+        "inline_data": {"mime_type": "image/png", "data": b"\x89PNG\r\n\x1a\n"}
+    }
+    assert contents[-1]["parts"][2] == {
+        "inline_data": {"mime_type": "image/jpeg", "data": b"\xff\xd8\xff"}
+    }
+    # earlier turns never receive image parts
+    for turn in contents[:-1]:
+        assert all("inline_data" not in part for part in turn["parts"])
+
+
+def test_multimodal_groq_raises_vision_unavailable(monkeypatch):
+    monkeypatch.setattr(settings, "AI_PROVIDER", "groq")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+    with pytest.raises(AIProviderError) as excinfo:
+        ai_providers.complete_text_multimodal(
+            system="s",
+            messages=[{"role": "user", "content": "what does the image show"}],
+            images=[{"mime_type": "image/png", "data": b"\x89PNG\r\n\x1a\n"}],
+        )
+    assert "cannot inspect image content" in str(excinfo.value)
+
+
+def test_multimodal_api_failure_is_safe(gemini_env, mock_gemini_client):
+    mock_gemini_client.models.generate_content.side_effect = RuntimeError("secret traceback here")
+    with pytest.raises(AIProviderError) as excinfo:
+        ai_providers.complete_text_multimodal(
+            system="s",
+            messages=[{"role": "user", "content": "what does the image show"}],
+            images=[{"mime_type": "image/png", "data": b"\x89PNG\r\n\x1a\n"}],
+        )
+    assert "secret traceback here" not in str(excinfo.value)
