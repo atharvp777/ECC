@@ -2,12 +2,18 @@
 
 Covers the edge branches in ``build_calendar_event_body`` and friends: am/pm
 times, bare phrases, weekday handling, full ISO datetimes, timezone fallback,
-and duration guard — all of which feed ``resolve_deadline`` and the calendar
-tools. Pure functions, no DB or Google calls.
+day-of-month + month-name phrases, and duration guard — all of which feed
+``resolve_deadline`` and the calendar tools. Pure functions, no DB or Google
+calls.
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
-from app.services.tools import build_calendar_event_body, resolve_deadline
+from app.services.tools import (
+    build_calendar_event_body,
+    resolve_deadline,
+    _resolve_event_date,
+)
 
 
 def _body(**kwargs):
@@ -93,3 +99,49 @@ def test_weekday_next_and_plain():
     tuesday = datetime.fromisoformat(body["start"]["dateTime"]).date()
     assert tuesday.weekday() == 1
     assert tuesday != now.date()
+
+
+# ----------------------------------------------------------------------
+# Day-of-month + month-name phrases (regression: 29 August → 19 August)
+# ----------------------------------------------------------------------
+FROZEN_NOW = datetime(2026, 8, 19, 10, 0, tzinfo=ZoneInfo("Asia/Kolkata"))  # Wednesday
+
+
+def test_month_day_phrase_never_defaults_to_today():
+    """Regression test for the reminder bug: 'on 29th on august remind me …'
+    created the event on 2026-08-19 (today) because the phrase fell through
+    the resolver. Every natural spelling of 29 August must resolve to
+    2026-08-29, never to the frozen 'today'."""
+    for phrase in (
+        "29th august",
+        "29 august",
+        "29th of august",
+        "29th on august",
+        "on 29th on august",
+        "august 29",
+        "august 29th",
+    ):
+        assert _resolve_event_date(phrase, FROZEN_NOW) == date(2026, 8, 29), (
+            f"{phrase!r} resolved to {_resolve_event_date(phrase, FROZEN_NOW)!s}"
+        )
+
+
+def test_month_day_phrase_full_event_body():
+    body = build_calendar_event_body(
+        {"summary": "s", "when": "29th on august", "timezone": "Asia/Kolkata"},
+        now=FROZEN_NOW,
+    )
+    assert "2026-08-29T09:00:00+05:30" in body["start"]["dateTime"]
+
+
+def test_resolve_deadline_month_day_phrase():
+    result = resolve_deadline("29th august", now=FROZEN_NOW)
+    assert result.year == 2026 and result.month == 8 and result.day == 29
+    assert result.tzinfo is not None
+
+
+def test_month_day_past_date_rolls_to_next_year():
+    # 15 August is before the frozen 19 August 2026 → next year.
+    assert _resolve_event_date("15th august", FROZEN_NOW) == date(2027, 8, 15)
+    # 25 August is still in 2026.
+    assert _resolve_event_date("25th august", FROZEN_NOW) == date(2026, 8, 25)

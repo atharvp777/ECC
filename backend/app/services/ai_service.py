@@ -5,7 +5,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import func
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
@@ -301,6 +301,126 @@ def _is_reschedule_request(text: str) -> bool:
     """
     lower = text.lower()
     return any(v in lower for v in _RESCHEDULE_VERBS)
+
+
+# ----------------------------------------------------------------------
+# Reminder-correction routing (deterministic, server-side)
+# ----------------------------------------------------------------------
+# A follow-up like "add that reminder for 29th august not 19th" corrects the
+# reminder the user just made. This must NEVER become a calendar lookup, a
+# brand-new create_calendar_event, or a create_task: the server re-routes it
+# to the reminder's existing mutation path (idempotent update, no duplicate
+# event, task never marked done, authorization guards preserved).
+#
+# Recent calendar events are tracked in memory because reminders are stored on
+# Google Calendar (not in the task table). Single-user local app: a bounded
+# module-level list is safe across HTTP requests in the same process.
+_RECENT_CALENDAR_EVENTS: list[dict] = []  # newest first
+_MAX_RECENT_CALENDAR_EVENTS = 20
+
+
+def _record_recent_calendar_event(event_id: str, summary: Optional[str]) -> None:
+    """Remember a recently created/updated calendar event (newest first)."""
+    _RECENT_CALENDAR_EVENTS.insert(
+        0, {"event_id": event_id, "summary": summary or ""}
+    )
+    del _RECENT_CALENDAR_EVENTS[_MAX_RECENT_CALENDAR_EVENTS:]
+
+
+def _clear_recent_calendar_events() -> None:
+    """Test hook only."""
+    _RECENT_CALENDAR_EVENTS.clear()
+
+
+def _reminder_correction_when(text: str) -> Optional[str]:
+    """Detect a follow-up that corrects a just-created reminder's date and
+    return the corrected 'when' phrase.
+
+    'add that reminder for 29th august not 19th' → '29th august'
+    'change that reminder to august 29'            → 'august 29'
+
+    Returns None for anything else (fresh creation, reads, non-date
+    corrections) so the normal planner path is used.
+    """
+    lower = (text or "").lower()
+    if not lower:
+        return None
+
+    is_reminder = "reminder" in lower or "remind" in lower
+    if not is_reminder:
+        return None
+    has_deictic = any(m in lower for m in ("that ", "this ", "the reminder", " it "))
+    if not has_deictic:
+        return None
+    corrects = any(
+        m in lower
+        for m in (" not ", "wrong", "instead", "should be", "actually", "rather")
+    )
+    reschedules = any(v in lower for v in _RESCHEDULE_VERBS)
+    if not (corrects or reschedules):
+        return None
+
+    from app.services.tools import find_month_day_phrase
+
+    return find_month_day_phrase(lower)
+
+
+def _recent_reminder_task(db: Session):
+    """Most recently created reminder task, or None."""
+    from app.models.task import Task, TaskType
+
+    return (
+        db.query(Task)
+        .filter(Task.task_type == TaskType.REMINDER)
+        .order_by(Task.created_at.desc(), Task.id.desc())
+        .first()
+    )
+
+
+def _reminder_correction_plan(db: Session, text: str) -> Optional[Dict[str, Any]]:
+    """Build the deterministic tool call for a reminder-correction follow-up.
+
+    Target priority:
+      1. The most recent REMINDER task → add_task_to_calendar(task_id, when)
+         (idempotent update of its linked event via the task-calendar path).
+      2. The most recent calendar event created/updated in this process →
+         update_calendar_event(event_id, corrected body) (never a duplicate).
+    Returns None when no correction is detected or nothing can be targeted.
+    """
+    when = _reminder_correction_when(text)
+    if not when:
+        return None
+
+    reminder_task = _recent_reminder_task(db)
+    if reminder_task is not None:
+        return {
+            "tool": "add_task_to_calendar",
+            "args": {
+                "task_id": reminder_task.id,
+                "when": when,
+                "start_time": None,
+                "duration_minutes": 60,
+                "timezone": SYSTEM_TIMEZONE,
+            },
+        }
+
+    if _RECENT_CALENDAR_EVENTS:
+        recent = _RECENT_CALENDAR_EVENTS[0]
+        from app.services.tools import build_calendar_event_body
+
+        body = build_calendar_event_body({
+            "summary": recent["summary"] or "(no title)",
+            "when": when,
+            "start_time": None,
+            "duration_minutes": 60,
+            "timezone": SYSTEM_TIMEZONE,
+        })
+        return {
+            "tool": "update_calendar_event",
+            "args": {"event_id": recent["event_id"], "event_data": body},
+        }
+
+    return None
 
 
 def _render_task_calendar_linked(data, moved: bool = False) -> str:
@@ -1248,6 +1368,12 @@ RULES:
   - A task is appropriate only when the user asks to create/manage a task or todo.
   - "remind me tomorrow to ..." should create a calendar event when the user is
     clearly asking for a scheduled reminder.
+  - Reminder CORRECTIONS — "add that reminder for 29th august not 19th",
+    "change that reminder to august 29", "the reminder should be on the 29th
+    of august" — correct a reminder the user JUST made. NEVER route them to
+    list_calendar_events, create_calendar_event or create_task: the server
+    deterministically updates the reminder's existing event. Return NONE
+    unless the message also asks for something else.
   - "what are my calendar events?" remains list_calendar_events.
 - Never invent a calendar event_id. Only pass one the user mentioned or that
   appeared in a recent listing. A task title is never an event_id — task
@@ -1610,6 +1736,18 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
     tool_call = extract_tool_call(last_user)
     planned_tool_call = False
 
+    # A reminder-correction follow-up ("add that reminder for 29th august not
+    # 19th") is routed deterministically, BEFORE the planner: it must update
+    # the just-created reminder through its existing mutation path — never a
+    # calendar lookup, a brand-new create_calendar_event, or a create_task.
+    correction_reroute = False
+    if tool_call is None:
+        correction_tool_call = _reminder_correction_plan(db, last_user)
+        if correction_tool_call is not None:
+            tool_call = correction_tool_call
+            planned_tool_call = True
+            correction_reroute = True
+
     if tool_call is None:
         tool_call = plan_tool_call(last_user, context, history=messages)
         planned_tool_call = tool_call is not None
@@ -1620,7 +1758,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
         # Response-wording flag (rendering only): reschedules say "Moved …",
         # fresh adds say "Added …". The operation itself is unchanged.
-        rescheduled = _is_reschedule_request(last_user)
+        rescheduled = _is_reschedule_request(last_user) or correction_reroute
 
         # ---- Task-calendar write normalization -----------------------------
         # The planner must NEVER fabricate a calendar event_id from a task
@@ -1709,7 +1847,9 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 tool_name,
                 args,
                 db,
-                user_message=last_user if planned_tool_call else None,
+                user_message=(
+                    None if correction_reroute else (last_user if planned_tool_call else None)
+                ),
                 last_assistant_reply=last_assistant_reply,
                 # A /tool apply_day_plan directive is the user literally invoking
                 # the mutation — that is explicit authorization in itself.
@@ -1747,6 +1887,12 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
                     return _calendar_operation_failure_message(tool_name)
                 return f"Tool '{tool_name}' failed: no result was returned."
+
+            # Remember successful calendar writes so a follow-up correction can
+            # deterministically target the reminder the user just made.
+            if tool_name in ("create_calendar_event", "update_calendar_event"):
+                if isinstance(data, dict) and data.get("id"):
+                    _record_recent_calendar_event(data["id"], data.get("summary"))
 
             # ---- 4️⃣ Planning tool: the LLM reasons over the structured data --
             # The get_today_overview tool returns the deterministic planning

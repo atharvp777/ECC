@@ -183,6 +183,12 @@ _WEEKDAYS = {
     "friday": 4, "saturday": 5, "sunday": 6,
 }
 
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
+    "december": 12,
+}
+
 
 def _parse_time(phrase: str) -> Optional[tuple]:
     """Extract (hour, minute) from 'HH:MM' or '3pm' style text, or None."""
@@ -202,6 +208,59 @@ def _parse_time(phrase: str) -> Optional[tuple]:
     return None
 
 
+def find_month_day_phrase(text: str) -> Optional[str]:
+    """Return the verbatim day+month substring ('29th august', 'august 29')
+    from a phrase, or None.
+
+    Used by the follow-up correction flow so the user's own date wording is
+    handed to the date resolver verbatim.
+    """
+    if not text:
+        return None
+    lowered = text.lower()
+    for pattern in (
+        r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?(" + "|".join(_MONTHS) + r")\b",
+        r"(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+    ):
+        match = re.search(pattern, lowered)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _resolve_month_day(text: str, today: date) -> Optional[date]:
+    """Resolve a day-of-month + month-name phrase like '29th august' or
+    'august 29' against ``today``. Past dates roll to the next year.
+
+    Returns None when the phrase contains no month/day combination.
+    """
+    # Day-first: "29th august", "29 august", "29th of august", "29th on august".
+    day_first = re.search(
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?(" + "|".join(_MONTHS) + r")\b",
+        text,
+    )
+    if day_first:
+        day, month_name = int(day_first.group(1)), day_first.group(2)
+    else:
+        # Month-first: "august 29", "august 29th".
+        month_first = re.search(
+            r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+            text,
+        )
+        if not month_first:
+            return None
+        month_name, day = month_first.group(1), int(month_first.group(2))
+
+    month = _MONTHS[month_name]
+    try:
+        candidate = date(today.year, month, day)
+    except ValueError:
+        return None
+    if candidate < today:
+        candidate = date(today.year + 1, month, day)
+    return candidate
+
+
 def _resolve_event_date(when: str, now: datetime) -> date:
     """Resolve a natural-language date phrase against the server clock."""
     text = (when or "").strip().lower()
@@ -217,6 +276,11 @@ def _resolve_event_date(when: str, now: datetime) -> date:
         return now.date()
     if "tomorrow" in text:
         return now.date() + timedelta(days=1)
+
+    # Day-of-month + month-name: "29th august", "august 29".
+    month_day = _resolve_month_day(text, now.date())
+    if month_day is not None:
+        return month_day
 
     for name, index in _WEEKDAYS.items():
         if name in text:
@@ -256,13 +320,18 @@ def _resolve_event_datetime(args: Dict[str, Any], now: datetime) -> datetime:
     return datetime.combine(event_date, time(parsed_time[0], parsed_time[1]), tzinfo=now.tzinfo)
 
 
-def build_calendar_event_body(args: Dict[str, Any]) -> Dict[str, Any]:
+def build_calendar_event_body(
+    args: Dict[str, Any], now: Optional[datetime] = None
+) -> Dict[str, Any]:
     """Build a Google Calendar API event body from planner-style arguments.
 
     Supports, in order of precedence:
       1. A complete `event_data` body passed through verbatim (existing contract).
       2. Structured `start`/`end` objects passed directly.
       3. `summary` + `when`/`start_time`/`duration_minutes` resolved server-side.
+
+    ``now`` is only for deterministic date resolution in tests; it defaults to
+    the current server clock in the event's timezone.
     """
     if isinstance(args.get("event_data"), dict):
         return dict(args["event_data"])
@@ -278,7 +347,7 @@ def build_calendar_event_body(args: Dict[str, Any]) -> Dict[str, Any]:
         tz = ZoneInfo(SYSTEM_TIMEZONE)
         tz_name = SYSTEM_TIMEZONE
 
-    now = datetime.now(tz)
+    now = now or datetime.now(tz)
     start = _resolve_event_datetime(args, now)
     duration = int(args.get("duration_minutes") or DEFAULT_DURATION_MINUTES)
     if duration <= 0:
@@ -408,7 +477,7 @@ def resolve_deadline(deadline_when: Optional[str], now: Optional[datetime] = Non
         "summary": "deadline",
         "when": deadline_when,
         "timezone": SYSTEM_TIMEZONE,
-    })
+    }, now=now)
     return parse_event_datetime(body["start"]["dateTime"])
 
 
