@@ -19,6 +19,10 @@ export default function App() {
           <Route path="/" element={<Overview />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
+          <Route path="/projects/:id/tasks" element={<ProjectDetail />} />
+          <Route path="/projects/:id/documents" element={<ProjectDetail />} />
+          <Route path="/projects/:id/notes" element={<ProjectDetail />} />
+          <Route path="/projects/:id/ai" element={<ProjectDetail />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/notes" element={<Notes />} />
           <Route path="/documents" element={<Documents />} />

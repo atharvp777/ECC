@@ -16,7 +16,7 @@ const ROUTE_TITLES = {
   "/notes": "Notes",
 };
 
-const PROJECT_DETAIL_RE = /^\/projects\/(\d+)$/;
+const PROJECT_DETAIL_RE = /^\/projects\/(\d+)(\/[^/]*)?$/;
 
 function usePageTitle() {
   const location = useLocation();

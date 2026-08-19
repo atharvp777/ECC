@@ -1,157 +1,146 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getProjects, createProject, deleteProject } from "../api";
-import { Plus, Trash2, FolderOpen } from "lucide-react";
+import { getProjects, deleteProject } from "../api";
+import { Plus, FolderKanban } from "lucide-react";
+import OrbitButton from "../components/ui/OrbitButton";
+import OrbitSkeleton from "../components/ui/OrbitSkeleton";
+import OrbitEmptyState from "../components/ui/OrbitEmptyState";
 import Modal from "../components/Modal";
-import { CATEGORY_LABELS } from "./ProjectDetail";
-
-const CATEGORIES = [
-  { value: "personal", label: "Personal" },
-  { value: "baja", label: "Baja" },
-  { value: "jobprep", label: "JobPrep" },
-  { value: "college", label: "College" },
-  { value: "studyabroad", label: "Study Abroad" },
-];
-const COLORS = ["#4f7cff", "#7c3aed", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4"];
-
-function ProjectForm({ onSave, onClose }) {
-  const [form, setForm] = useState({ name: "", description: "", category: "personal", color: "#4f7cff", deadline: "" });
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-
-  const submit = async () => {
-    if (!form.name.trim()) return;
-    await createProject({ ...form, deadline: form.deadline || null });
-    onSave();
-  };
-
-  return (
-    <>
-      <div className="form-group">
-        <label className="form-label">Project Name *</label>
-        <input className="form-input" value={form.name} onChange={e => set("name", e.target.value)} placeholder="e.g. HV Wiring System" autoFocus />
-      </div>
-      <div className="form-group">
-        <label className="form-label">Description</label>
-        <textarea className="form-textarea" value={form.description} onChange={e => set("description", e.target.value)} placeholder="What is this project about?" style={{ minHeight: 70 }} />
-      </div>
-      <div className="form-row">
-        <div className="form-group">
-          <label className="form-label">Category</label>
-          <select className="form-select" value={form.category} onChange={e => set("category", e.target.value)}>
-            {CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </select>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Deadline</label>
-          <input type="date" className="form-input" value={form.deadline} onChange={e => set("deadline", e.target.value)} />
-        </div>
-      </div>
-      <div className="form-group">
-        <label className="form-label">Color</label>
-        <div style={{ display: "flex", gap: 8 }}>
-          {COLORS.map(c => (
-            <button key={c} onClick={() => set("color", c)} style={{
-              width: 28, height: 28, borderRadius: "50%", background: c, border: "none", cursor: "pointer",
-              outline: form.color === c ? `3px solid ${c}` : "3px solid transparent", outlineOffset: 2,
-            }} />
-          ))}
-        </div>
-      </div>
-      <div className="modal-footer">
-        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-primary" onClick={submit}>Create Project</button>
-      </div>
-    </>
-  );
-}
+import ProjectRow from "../components/ProjectRow";
+import ProjectDrawer from "../components/ProjectDrawer";
 
 export default function Projects() {
-const [projects, setProjects] = useState([]);
-  const [showModal, setShowModal] = useState(false);
+  const navigate = useNavigate();
+  const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
-  const navigate = useNavigate();
+
+  const [drawerMode, setDrawerMode] = useState(null); // "create" | project object
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const triggerRef = useRef(null);
 
   const load = async () => {
-    try { setProjects(await getProjects()); setLoadError(false); } catch { setLoadError(true); }
-    finally { setLoading(false); }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const handleDelete = async (e, id) => {
-    e.stopPropagation();
-    if (!confirm("Delete this project and all its tasks?")) return;
     try {
-      await deleteProject(id);
-      load();
-    } catch (err) {
-      alert("Failed: " + (err.response?.data?.detail || err.message));
+      setProjects(await getProjects());
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
     }
   };
 
-  if (loading) return <div className="spinner" />;
+  useEffect(() => {
+    load();
+  }, []);
+
+  const openCreate = (trigger) => {
+    triggerRef.current = trigger || null;
+    setDrawerMode("create");
+  };
+
+  const openEdit = (project, trigger) => {
+    triggerRef.current = trigger || null;
+    setDrawerMode(project);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteProject(deleteTarget.id);
+      setDeleteTarget(null);
+      setNotice("Project deleted");
+      load();
+    } catch {
+      setDeleteError("Couldn't delete the project.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div className="page">
-      <div className="section-header">
-        <h2 style={{ fontSize: 18, fontWeight: 700 }}>Projects</h2>
-        <button className="btn btn-primary" onClick={() => setShowModal(true)}>
-          <Plus size={14} /> New Project
-        </button>
-      </div>
-
-{loadError && (
-        <div className="card" style={{ marginBottom: 16, borderColor: "var(--warning)", textAlign: "center" }}>
-          <p style={{ color: "var(--warning)", fontSize: 13 }}>
-            ⚠ Couldn't load projects. Check the backend connection.
-          </p>
+      {notice && (
+        <div className="tasks-notice tasks-notice--success" role="status">
+          {notice}
         </div>
       )}
 
-      {projects.length === 0
-        ? (
-          <div className="empty">
-            <FolderOpen size={40} style={{ margin: "0 auto 12px", display: "block", opacity: .3 }} />
-            <p>No projects yet. Create your first one!</p>
-          </div>
-        )
-        : (
-          <div className="project-grid">
-            {projects.map(p => {
-              const pct = p.task_count ? Math.round((p.done_tasks || 0) / p.task_count * 100) : 0;
-return (
-                <div className="project-card" key={p.id} onClick={() => navigate(`/projects/${p.id}`)}>
-                  <div className="color-bar" style={{ background: p.color }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <div>
-                      <h4>{p.name}</h4>
-                      <div className="cat">{CATEGORY_LABELS[p.category] || p.category} · {p.status}</div>
-                    </div>
-                    <button className="btn btn-ghost btn-sm" onClick={e => handleDelete(e, p.id)}>
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                  {p.description && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, lineHeight: 1.4 }}>{p.description}</p>}
-                  <div className="progress-row" style={{ marginTop: 14 }}>
-                    <div className="progress-bar">
-                      <div className="progress-fill" style={{ width: `${pct}%`, background: p.color }} />
-                    </div>
-                    <span style={{ fontSize: 11, color: "var(--muted)", flexShrink: 0 }}>{p.task_count} tasks</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )
-      }
+      <div className="projects-header">
+        <div>
+          <h2 className="projects-header__title">Projects</h2>
+          <p className="projects-header__subtitle">Keep your work organized.</p>
+        </div>
+        <OrbitButton variant="primary" onClick={(e) => openCreate(e.currentTarget)}>
+          <Plus size={14} aria-hidden="true" /> New project
+        </OrbitButton>
+      </div>
 
-      {showModal && (
-        <Modal title="New Project" onClose={() => setShowModal(false)}>
-          <ProjectForm onSave={() => { setShowModal(false); load(); }} onClose={() => setShowModal(false)} />
+      {loading ? (
+        <div className="projects-load" aria-hidden="true">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <OrbitSkeleton key={i} width="100%" height={64} />
+          ))}
+        </div>
+      ) : loadError ? (
+        <div className="overview-error" role="alert">
+          <p>Couldn't load projects.</p>
+          <OrbitButton size="sm" variant="secondary" onClick={load}>Retry</OrbitButton>
+        </div>
+      ) : projects.length === 0 ? (
+        <OrbitEmptyState
+          icon={FolderKanban}
+          title="No projects yet."
+          description="Create your first project."
+          action={
+            <OrbitButton variant="secondary" onClick={() => openCreate(null)}>
+              <Plus size={14} aria-hidden="true" /> New project
+            </OrbitButton>
+          }
+        />
+      ) : (
+        <div className="projects-list">
+          {projects.map((project) => (
+            <ProjectRow
+              key={project.id}
+              project={project}
+              onOpen={(p) => navigate(`/projects/${p.id}`)}
+              onEdit={(p) => openEdit(p, null)}
+              onDelete={(p) => setDeleteTarget(p)}
+            />
+          ))}
+        </div>
+      )}
+
+      {drawerMode && (
+        <ProjectDrawer
+          project={drawerMode === "create" ? null : drawerMode}
+          triggerRef={triggerRef}
+          onClose={() => setDrawerMode(null)}
+          onSaved={() => {
+            setDrawerMode(null);
+            setNotice(drawerMode === "create" ? "Project created" : "Project saved");
+            load();
+          }}
+        />
+      )}
+
+      {deleteTarget && (
+        <Modal title="Delete project?" onClose={() => setDeleteTarget(null)}>
+          <p className="confirm-text">"{deleteTarget.name}"</p>
+          <p className="confirm-hint">This deletes the project and all of its tasks, notes, and documents.</p>
+          {deleteError && <p className="overview-action-error" role="alert">{deleteError}</p>}
+          <div className="modal-footer">
+            <OrbitButton variant="ghost" onClick={() => setDeleteTarget(null)}>Cancel</OrbitButton>
+            <OrbitButton variant="danger" onClick={confirmDelete} loading={deleting}>Delete</OrbitButton>
+          </div>
         </Modal>
       )}
     </div>
   );
 }
-
