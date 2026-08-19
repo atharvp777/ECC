@@ -9,6 +9,8 @@ calls.
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.services.tools import (
     build_calendar_event_body,
     resolve_deadline,
@@ -145,3 +147,27 @@ def test_month_day_past_date_rolls_to_next_year():
     assert _resolve_event_date("15th august", FROZEN_NOW) == date(2027, 8, 15)
     # 25 August is still in 2026.
     assert _resolve_event_date("25th august", FROZEN_NOW) == date(2026, 8, 25)
+
+
+@pytest.mark.parametrize(
+    "phrase,expected",
+    [
+        ("29 August", date(2026, 8, 29)),
+        ("29th August", date(2026, 8, 29)),
+        ("August 29", date(2026, 8, 29)),
+        ("August 29th", date(2026, 8, 29)),
+        # Different months and days — not an August-specific patch.
+        ("29 September", date(2026, 9, 29)),
+        ("September 29th", date(2026, 9, 29)),
+        ("4 October", date(2026, 10, 4)),
+        ("October 4th", date(2026, 10, 4)),
+        ("31 December", date(2026, 12, 31)),
+        ("1 January", date(2027, 1, 1)),      # past this year → rolls
+        ("June 5", date(2027, 6, 5)),         # past this year → rolls
+    ],
+)
+def test_month_day_variants_and_other_months(phrase, expected):
+    """Every spelling of an explicit day+month resolves to that exact date at
+    the frozen 2026-08-19 system date — the current day (19) can never
+    overwrite an explicitly supplied day."""
+    assert _resolve_event_date(phrase, FROZEN_NOW) == expected

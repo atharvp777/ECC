@@ -329,10 +329,18 @@ _RECENT_CALENDAR_EVENTS: list[dict] = []  # newest first
 _MAX_RECENT_CALENDAR_EVENTS = 20
 
 
-def _record_recent_calendar_event(event_id: str, summary: Optional[str]) -> None:
+def _record_recent_calendar_event(
+    event_id: str, summary: Optional[str], start: Optional[dict] = None
+) -> None:
     """Remember a recently created/updated calendar event (newest first)."""
+    start_dict = dict(start) if isinstance(start, dict) else {}
     _RECENT_CALENDAR_EVENTS.insert(
-        0, {"event_id": event_id, "summary": summary or ""}
+        0,
+        {
+            "event_id": event_id,
+            "summary": summary or "",
+            "start": start_dict,
+        },
     )
     del _RECENT_CALENDAR_EVENTS[_MAX_RECENT_CALENDAR_EVENTS:]
 
@@ -342,37 +350,124 @@ def _clear_recent_calendar_events() -> None:
     _RECENT_CALENDAR_EVENTS.clear()
 
 
-def _reminder_correction_when(text: str) -> Optional[str]:
-    """Detect a follow-up that corrects a just-created reminder's date and
-    return the corrected 'when' phrase.
+def _reminder_correction_intent(text: str) -> bool:
+    """True when the message corrects a just-created reminder's date.
 
-    'add that reminder for 29th august not 19th' → '29th august'
-    'change that reminder to august 29'            → 'august 29'
-
-    Returns None for anything else (fresh creation, reads, non-date
-    corrections) so the normal planner path is used.
+    A correction is either reminder-worded and deictic ("add that reminder
+    for 29th august not 19th") or points at the reminder with the pronoun
+    "it" next to a date ("set it for 29 August", "you did it for 19, set it
+    for 29"). Fresh creations ("set a reminder for 29th august") and
+    unrelated messages that merely contain a number ("complete task 1",
+    "SEM 1 syllabus … 10 and 12 December") are never corrections.
     """
     lower = (text or "").lower()
     if not lower:
-        return None
+        return False
 
-    is_reminder = "reminder" in lower or "remind" in lower
-    if not is_reminder:
-        return None
-    has_deictic = any(m in lower for m in ("that ", "this ", "the reminder", " it "))
-    if not has_deictic:
-        return None
-    corrects = any(
+    # A fresh creation names the reminder explicitly ("set a reminder for 29th
+    # august", "remind me to ... on 29th august") — never a correction.
+    is_fresh = any(
         m in lower
-        for m in (" not ", "wrong", "instead", "should be", "actually", "rather")
+        for m in (
+            "set a reminder", "add a reminder", "create a reminder",
+            "remind me", "remind me to", "create a task", "create task",
+            "new reminder", "new task",
+        )
     )
-    reschedules = any(v in lower for v in _RESCHEDULE_VERBS)
-    if not (corrects or reschedules):
-        return None
+    if is_fresh:
+        return False
 
     from app.services.tools import find_month_day_phrase
 
+    has_date = (
+        find_month_day_phrase(lower) is not None
+        or re.search(r"\b\d{1,2}(?:st|nd|rd|th)?\b", lower) is not None
+    )
+    if not has_date:
+        return False
+
+    # Reminder-worded corrections (existing contract): deictic + a correction
+    # or reschedule marker.
+    is_reminder = "reminder" in lower or "remind" in lower
+    has_deictic = any(m in lower for m in ("that ", "this ", "the reminder", " it "))
+    if is_reminder and has_deictic:
+        corrects = any(
+            m in lower
+            for m in (" not ", "wrong", "instead", "should be", "actually", "rather")
+        )
+        reschedules = any(v in lower for v in _RESCHEDULE_VERBS)
+        return corrects or reschedules
+
+    # Pronoun corrections: "set it for 29 August", "you did it for 19, set it
+    # for 29" — the user points at the reminder just created with "it".
+    return bool(re.search(r"\bit\b", lower))
+
+
+def _reminder_correction_when(text: str) -> Optional[str]:
+    """Return the corrected month-day 'when' phrase for a correction follow-up.
+
+    'add that reminder for 29th august not 19th' → '29th august'
+    'change that reminder to august 29'          → 'august 29'
+    'set it for 29 August'                        → '29 august'
+    'you did it for 19, set it for 29'            → None (a bare-day-only
+                                                    correction; the plan
+                                                    combines the new day with
+                                                    the reminder's month)
+
+    Returns None for anything else (fresh creation, non-date messages) so
+    the normal planner path is used.
+    """
+    lower = (text or "").lower()
+    if not lower or not _reminder_correction_intent(lower):
+        return None
+    from app.services.tools import find_month_day_phrase
+
     return find_month_day_phrase(lower)
+
+
+def _reminder_correction_day(text: str) -> Optional[int]:
+    """Extract the NEW day-of-month from a bare-day correction.
+
+    'you did it for 19, set it for 29'  → 29
+    'it was the 19th, make it the 29th' → 29
+
+    Returns None when the message carries no day-of-month.
+    """
+    lower = (text or "").lower()
+    match = re.search(
+        r"(?:set|make|move|change|reschedule|shift|do)\s+it\s+(?:for|on|to)\s+"
+        r"(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\b",
+        lower,
+    )
+    if match:
+        return int(match.group(1))
+    days = [int(d) for d in re.findall(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", lower)]
+    return days[-1] if days else None
+
+
+def _reminder_artifact_month(artifact) -> Optional[str]:
+    """Month name of the reminder being corrected (for bare-day corrections).
+
+    ``artifact`` is either a recent-event record dict (with a ``start``) or a
+    Task row (uses ``scheduled_start``/``deadline``).
+    """
+    from app.services.tools import _MONTHS
+
+    month_names = list(_MONTHS.keys())
+    iso = ""
+    if isinstance(artifact, dict):
+        start = artifact.get("start") or {}
+        iso = start.get("dateTime") or start.get("date") or ""
+    else:
+        dt = getattr(artifact, "scheduled_start", None) or getattr(artifact, "deadline", None)
+        iso = dt.isoformat() if dt else ""
+    if not iso:
+        return None
+    try:
+        month = datetime.fromisoformat(str(iso).replace("Z", "+00:00")).month
+    except ValueError:
+        return None
+    return month_names[month - 1]
 
 
 def _recent_reminder_task(db: Session):
@@ -390,36 +485,66 @@ def _recent_reminder_task(db: Session):
 def _reminder_correction_plan(db: Session, text: str) -> Optional[Dict[str, Any]]:
     """Build the deterministic tool call for a reminder-correction follow-up.
 
-    Target priority:
-      1. The most recent REMINDER task → add_task_to_calendar(task_id, when)
-         (idempotent update of its linked event via the task-calendar path).
-      2. The most recent calendar event created/updated in this process →
-         update_calendar_event(event_id, corrected body) (never a duplicate).
-    Returns None when no correction is detected or nothing can be targeted.
+    Resolves "it" to the reminder/task from the immediately preceding
+    successful action — the user must never have to name the reminder again.
+    The target is never a Google Calendar title lookup.
+
+      Target priority:
+        1. The most recent calendar event created/updated in this process
+           (reminders are stored on Google Calendar, so the event Orbit just
+           wrote is the "it" the user means) → update_calendar_event, an
+           in-place update that never duplicates and never leaves the old
+           date's event behind.
+        2. The most recent REMINDER task → add_task_to_calendar, which
+           idempotently creates-or-updates its linked event.
+        3. The most recent task carrying a linked Google Calendar event →
+           add_task_to_calendar.
+
+    The corrected date is either a full month-day phrase from the message
+    ("set it for 29 August") or a bare day combined with the reminder's own
+    month ("you did it for 19, set it for 29").
+
+    Returns None when no correction is detected (``_reminder_correction_intent``)
+    or nothing can be targeted — never a fabricated calendar event_id.
     """
-    when = _reminder_correction_when(text)
-    if not when:
+    from app.models.task import Task
+    from app.services.tools import build_calendar_event_body
+
+    if not _reminder_correction_intent(text):
         return None
 
-    reminder_task = _recent_reminder_task(db)
-    if reminder_task is not None:
-        return {
-            "tool": "add_task_to_calendar",
-            "args": {
-                "task_id": reminder_task.id,
-                "when": when,
-                "start_time": None,
-                "duration_minutes": 60,
-                "timezone": SYSTEM_TIMEZONE,
-            },
-        }
-
+    # Select the target first so a bare-day correction can inherit the
+    # reminder's own month.
     if _RECENT_CALENDAR_EVENTS:
-        recent = _RECENT_CALENDAR_EVENTS[0]
-        from app.services.tools import build_calendar_event_body
+        target = _RECENT_CALENDAR_EVENTS[0]
+    else:
+        reminder_task = _recent_reminder_task(db)
+        linked_task = (
+            db.query(Task)
+            .filter(Task.google_calendar_event_id.isnot(None))
+            .order_by(Task.updated_at.desc(), Task.id.desc())
+            .first()
+        )
+        candidates = [t for t in (reminder_task, linked_task) if t is not None]
+        target = (
+            max(candidates, key=lambda t: t.updated_at or t.created_at)
+            if candidates
+            else None
+        )
+    if target is None:
+        return None
 
+    when = _reminder_correction_when(text)
+    if not when:
+        day = _reminder_correction_day(text)
+        month_name = _reminder_artifact_month(target)
+        if day is None or not month_name:
+            return None
+        when = f"{day} {month_name}"
+
+    if isinstance(target, dict):
         body = build_calendar_event_body({
-            "summary": recent["summary"] or "(no title)",
+            "summary": target["summary"] or "(no title)",
             "when": when,
             "start_time": None,
             "duration_minutes": 60,
@@ -427,10 +552,19 @@ def _reminder_correction_plan(db: Session, text: str) -> Optional[Dict[str, Any]
         })
         return {
             "tool": "update_calendar_event",
-            "args": {"event_id": recent["event_id"], "event_data": body},
+            "args": {"event_id": target["event_id"], "event_data": body},
         }
 
-    return None
+    return {
+        "tool": "add_task_to_calendar",
+        "args": {
+            "task_id": target.id,
+            "when": when,
+            "start_time": None,
+            "duration_minutes": 60,
+            "timezone": SYSTEM_TIMEZONE,
+        },
+    }
 
 
 def _render_task_calendar_linked(data, moved: bool = False) -> str:
@@ -1380,8 +1514,10 @@ RULES:
     clearly asking for a scheduled reminder.
   - Reminder CORRECTIONS — "add that reminder for 29th august not 19th",
     "change that reminder to august 29", "the reminder should be on the 29th
-    of august" — correct a reminder the user JUST made. NEVER route them to
-    list_calendar_events, create_calendar_event or create_task: the server
+    of august", "set it for 29 august", "you did it for 19, set it for 29" —
+    correct a reminder the user JUST made. NEVER route them to
+    list_calendar_events, create_calendar_event, create_task or
+    update_calendar_event (you have no event id): the server
     deterministically updates the reminder's existing event. Return NONE
     unless the message also asks for something else.
   - "what are my calendar events?" remains list_calendar_events.
@@ -1902,7 +2038,9 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             # deterministically target the reminder the user just made.
             if tool_name in ("create_calendar_event", "update_calendar_event"):
                 if isinstance(data, dict) and data.get("id"):
-                    _record_recent_calendar_event(data["id"], data.get("summary"))
+                    _record_recent_calendar_event(
+                        data["id"], data.get("summary"), data.get("start")
+                    )
 
             # ---- 4️⃣ Planning tool: the LLM reasons over the structured data --
             # The get_today_overview tool returns the deterministic planning
