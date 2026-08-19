@@ -32,6 +32,8 @@ from app.services.ai_service import (
     chat_with_ai,
     _reminder_correction_when,
     _reminder_correction_day,
+    _reminder_correction_intent,
+    _reminder_correction_time,
     _reminder_correction_plan,
     _record_recent_calendar_event,
     _clear_recent_calendar_events,
@@ -528,3 +530,370 @@ def test_non_correction_numeric_messages_never_reroute(db_session):
     assert _reminder_correction_plan(
         db_session, "The BE SEM 1 syllabus exam dates are 10 and 12 December."
     ) is None
+
+
+# ----------------------------------------------------------------------
+# E. Deictic "that/this" corrections (the dogfooding bug: "Actually make
+#    that 30th August" was never recognized as a correction, so the free-form
+#    chat merely CLAIMED an update without touching Google Calendar)
+# ----------------------------------------------------------------------
+def _recent_event_record(
+    event_id="evt_reminder", summary="sell DamCapital shares and buy hdfc"
+):
+    _record_recent_calendar_event(
+        event_id,
+        summary,
+        {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+    )
+
+
+@pytest.mark.parametrize(
+    "text,expected_start",
+    [
+        ("Actually make that 30th August", "2026-08-30T09:00:00+05:30"),
+        ("Actually make that 31st August", "2026-08-31T09:00:00+05:30"),
+    ],
+)
+def test_deictic_that_correction_targets_recent_event_by_id(
+    frozen_2026_08_19, db_session, text, expected_start
+):
+    """'Actually make that 30th August' must be recognized as a correction and
+    deterministically UPDATE the just-created event's exact event_id to
+    2026-08-30T09:00:00+05:30 — never a title lookup, never a duplicate."""
+    _recent_event_record()
+    assert _reminder_correction_intent(text) is True
+    plan = _reminder_correction_plan(db_session, text)
+    assert plan is not None
+    assert plan["tool"] == "update_calendar_event"
+    assert plan["args"]["event_id"] == "evt_reminder"
+    body = plan["args"]["event_data"]
+    assert body["start"]["dateTime"] == expected_start
+    assert body["start"]["timeZone"] == SYSTEM_TIMEZONE
+
+
+def test_create_then_deictic_that_correction_updates_event(
+    frozen_2026_08_19, db_session
+):
+    """Full dogfooding flow: create on 29th august, then 'Actually make that
+    30th August' — exactly one create and one in-place update to 2026-08-30,
+    never a duplicate, never a free-form chat that claims success without a
+    backend mutation."""
+    create_payload = {
+        "tool": "create_calendar_event",
+        "args": {
+            "summary": "sell DamCapital shares and buy hdfc",
+            "description": None,
+            "when": "29th august",
+            "start_time": None,
+            "duration_minutes": 60,
+            "timezone": SYSTEM_TIMEZONE,
+        },
+    }
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps(create_payload)
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=False), \
+             patch("app.services.tools.gc_create_calendar_event") as mock_create, \
+             patch("app.services.tools.gc_update_calendar_event") as mock_update:
+            mock_create.return_value = {
+                "id": "evt_reminder",
+                "summary": "sell DamCapital shares and buy hdfc",
+                "start": {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "end": {"dateTime": "2026-08-29T10:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "status": "confirmed",
+            }
+            mock_update.return_value = {
+                "id": "evt_reminder",
+                "summary": "sell DamCapital shares and buy hdfc",
+                "start": {"dateTime": "2026-08-30T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "end": {"dateTime": "2026-08-30T10:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "status": "confirmed",
+            }
+
+            reply1 = chat_with_ai(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "set a reminder for 29th august for selling "
+                            "DamCapital shares and buy HDFC"
+                        ),
+                    }
+                ],
+                db_session,
+            )
+            reply2 = chat_with_ai(
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            "set a reminder for 29th august for selling "
+                            "DamCapital shares and buy HDFC"
+                        ),
+                    },
+                    {"role": "assistant", "content": reply1},
+                    {"role": "user", "content": "Actually make that 30th August"},
+                ],
+                db_session,
+            )
+
+    mock_create.assert_called_once()
+    mock_update.assert_called_once()
+    event_id, body = mock_update.call_args.args
+    assert event_id == "evt_reminder"
+    assert body["start"]["dateTime"] == "2026-08-30T09:00:00+05:30"
+    assert body["start"]["timeZone"] == SYSTEM_TIMEZONE
+    # The reply must be backed by the authoritative Google response (30 Aug).
+    assert "Updated calendar event" in reply2
+    assert "2026-08-30" in reply2
+
+
+def test_deictic_repeated_corrections_are_idempotent(
+    frozen_2026_08_19, db_session
+):
+    """Two consecutive deictic corrections still never create a second event:
+    each turn is an in-place update of the same event_id."""
+    create_payload = {
+        "tool": "create_calendar_event",
+        "args": {
+            "summary": "sell DamCapital shares and buy hdfc",
+            "description": None,
+            "when": "29th august",
+            "start_time": None,
+            "duration_minutes": 60,
+            "timezone": SYSTEM_TIMEZONE,
+        },
+    }
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps(create_payload)
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=False), \
+             patch("app.services.tools.gc_create_calendar_event") as mock_create, \
+             patch("app.services.tools.gc_update_calendar_event") as mock_update:
+            mock_create.return_value = {
+                "id": "evt_reminder",
+                "summary": "sell DamCapital shares and buy hdfc",
+                "start": {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "end": {"dateTime": "2026-08-29T10:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "status": "confirmed",
+            }
+
+            def _update_response(start):
+                return {
+                    "id": "evt_reminder",
+                    "summary": "sell DamCapital shares and buy hdfc",
+                    "start": {"dateTime": start, "timeZone": SYSTEM_TIMEZONE},
+                    "end": {"dateTime": start.replace("09:00", "10:00"), "timeZone": SYSTEM_TIMEZONE},
+                    "status": "confirmed",
+                }
+
+            mock_update.side_effect = [
+                _update_response("2026-08-30T09:00:00+05:30"),
+                _update_response("2026-08-31T09:00:00+05:30"),
+            ]
+
+            reply1 = chat_with_ai(
+                [{"role": "user", "content": "set a reminder for 29th august for selling DamCapital shares and buy HDFC"}],
+                db_session,
+            )
+            base = [
+                {"role": "user", "content": "set a reminder for 29th august for selling DamCapital shares and buy HDFC"},
+                {"role": "assistant", "content": reply1},
+            ]
+            reply2 = chat_with_ai(
+                base + [{"role": "user", "content": "Actually make that 30th August"}],
+                db_session,
+            )
+            reply3 = chat_with_ai(
+                base
+                + [{"role": "user", "content": "Actually make that 30th August"},
+                   {"role": "assistant", "content": reply2},
+                   {"role": "user", "content": "Actually make that 31st August"}],
+                db_session,
+            )
+
+    mock_create.assert_called_once()
+    assert mock_update.call_count == 2
+    for call in mock_update.call_args_list:
+        assert call.args[0] == "evt_reminder"
+    assert mock_update.call_args_list[0].args[1]["start"]["dateTime"] == "2026-08-30T09:00:00+05:30"
+    assert mock_update.call_args_list[1].args[1]["start"]["dateTime"] == "2026-08-31T09:00:00+05:30"
+    assert "Updated calendar event" in reply2
+    assert "Updated calendar event" in reply3
+
+
+# ----------------------------------------------------------------------
+# F. "It still shows the 29th" is a complaint, not a command to change to 29th
+# ----------------------------------------------------------------------
+def test_calendar_still_shows_complaint_is_not_a_correction(
+    frozen_2026_08_19, db_session
+):
+    """'but the calendar still shows it on 29th' is a question/complaint about
+    the current state — it must NOT be rerouted into a no-op 'update' to the
+    29th that pretends to be a change (which is what produced the fake
+    'Updated calendar event k6p9m3f0...' in the dogfooding session)."""
+    _recent_event_record()
+    assert _reminder_correction_intent("but the calendar still shows it on 29th") is False
+    assert (
+        _reminder_correction_plan(db_session, "but the calendar still shows it on 29th")
+        is None
+    )
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response('"NONE"')
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=False), \
+             patch("app.services.tools.gc_update_calendar_event") as mock_update:
+            reply = chat_with_ai(
+                [{"role": "user", "content": "but the calendar still shows it on 29th"}],
+                db_session,
+            )
+
+    mock_update.assert_not_called()
+    assert "Updated calendar event" not in reply
+
+
+# ----------------------------------------------------------------------
+# G. Time-only corrections ("Actually make it 11 AM")
+# ----------------------------------------------------------------------
+def test_time_only_correction_keeps_the_reminders_date(
+    frozen_2026_08_19, db_session
+):
+    """'Actually make it 11 AM' must move the reminder's clock time to 11:00 on
+    ITS OWN date (29 August) — never reinterpret '11' as day-of-month 11 (which
+    previously produced a bogus 2027-08-11 event)."""
+    _recent_event_record()
+    assert _reminder_correction_intent("Actually make it 11 AM") is True
+    assert _reminder_correction_time("Actually make it 11 AM") == "11:00:00"
+    plan = _reminder_correction_plan(db_session, "Actually make it 11 AM")
+    assert plan is not None
+    assert plan["args"]["event_id"] == "evt_reminder"
+    start = plan["args"]["event_data"]["start"]
+    assert start["dateTime"] == "2026-08-29T11:00:00+05:30"
+    assert start["timeZone"] == SYSTEM_TIMEZONE
+
+
+def test_time_only_correction_full_flow(frozen_2026_08_19, db_session):
+    """Full flow: create on 29th, then 'Actually make it 11 AM' → one update
+    with start 2026-08-29T11:00:00+05:30, and the reply shows the authoritative
+    start from Google's response."""
+    create_payload = {
+        "tool": "create_calendar_event",
+        "args": {
+            "summary": "sell DamCapital shares and buy hdfc",
+            "description": None,
+            "when": "29th august",
+            "start_time": None,
+            "duration_minutes": 60,
+            "timezone": SYSTEM_TIMEZONE,
+        },
+    }
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(
+            json.dumps(create_payload)
+        )
+        mock_groq.return_value = mock_client
+
+        with patch("app.services.ai_service.is_connected", return_value=False), \
+             patch("app.services.tools.gc_create_calendar_event") as mock_create, \
+             patch("app.services.tools.gc_update_calendar_event") as mock_update:
+            mock_create.return_value = {
+                "id": "evt_reminder",
+                "summary": "sell DamCapital shares and buy hdfc",
+                "start": {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "end": {"dateTime": "2026-08-29T10:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "status": "confirmed",
+            }
+            mock_update.return_value = {
+                "id": "evt_reminder",
+                "summary": "sell DamCapital shares and buy hdfc",
+                "start": {"dateTime": "2026-08-29T11:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "end": {"dateTime": "2026-08-29T12:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+                "status": "confirmed",
+            }
+
+            reply1 = chat_with_ai(
+                [{"role": "user", "content": "set a reminder for 29th august for selling DamCapital shares and buy HDFC"}],
+                db_session,
+            )
+            reply2 = chat_with_ai(
+                [
+                    {"role": "user", "content": "set a reminder for 29th august for selling DamCapital shares and buy HDFC"},
+                    {"role": "assistant", "content": reply1},
+                    {"role": "user", "content": "Actually make it 11 AM"},
+                ],
+                db_session,
+            )
+
+    mock_create.assert_called_once()
+    mock_update.assert_called_once()
+    event_id, body = mock_update.call_args.args
+    assert event_id == "evt_reminder"
+    assert body["start"]["dateTime"] == "2026-08-29T11:00:00+05:30"
+    assert body["start"]["timeZone"] == SYSTEM_TIMEZONE
+    assert "2026-08-29T11:00:00" in reply2
+    assert "Updated calendar event" in reply2
+
+
+# ----------------------------------------------------------------------
+# H. Honest success: no "Updated" claim unless Google confirms the change
+# ----------------------------------------------------------------------
+def test_update_claim_only_when_response_matches_request(
+    frozen_2026_08_19, db_session
+):
+    """If Google's authoritative response shows a start different from what was
+    requested, the app must NOT claim success — it reports that the update did
+    not apply and logs the mismatch."""
+    _recent_event_record()
+    with patch("app.services.ai_service.is_connected", return_value=False), \
+         patch("app.services.ai_service.logger") as mock_logger, \
+         patch("app.services.tools.gc_update_calendar_event") as mock_update:
+        mock_update.return_value = {
+            "id": "evt_reminder",
+            "summary": "sell DamCapital shares and buy hdfc",
+            "start": {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+            "end": {"dateTime": "2026-08-29T10:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+            "status": "confirmed",
+        }
+        reply = chat_with_ai(
+            [{"role": "user", "content": "Actually make that 30th August"}],
+            db_session,
+        )
+
+    mock_update.assert_called_once()
+    assert "Updated calendar event" not in reply
+    assert "couldn't update" in reply.lower()
+    assert mock_logger.warning.called
+
+
+def test_correction_targets_most_recent_event_by_id_not_title(
+    frozen_2026_08_19, db_session
+):
+    """Two same-titled recent events: the correction targets the exact event_id
+    of the most recent one (index 0), never a title lookup against the older
+    event."""
+    _record_recent_calendar_event(
+        "older_event", "sell DamCapital shares and buy hdfc",
+        {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+    )
+    _record_recent_calendar_event(
+        "newest_event", "sell DamCapital shares and buy hdfc",
+        {"dateTime": "2026-08-29T09:00:00+05:30", "timeZone": SYSTEM_TIMEZONE},
+    )
+    plan = _reminder_correction_plan(db_session, "Actually make that 30th August")
+    assert plan is not None
+    assert plan["args"]["event_id"] == "newest_event"

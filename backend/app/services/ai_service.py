@@ -44,6 +44,10 @@ TASK_TOOLS = {"create_task", "update_task", "complete_task", "bulk_update_tasks"
 # is unchanged.
 _RESCHEDULE_VERBS = ("move", "reschedule", "change", "shift", "postpone")
 
+# Verbs that make a deictic date/time phrase ("that 30th august", "that 11 am")
+# an explicit correction of the reminder just created.
+_CHANGE_VERBS = ("make", "set", "do", "update") + _RESCHEDULE_VERBS
+
 _CALENDAR_NOT_CREATED_MESSAGE = (
     "I couldn't add that event to Google Calendar. No calendar event was created."
 )
@@ -180,6 +184,34 @@ def _render_created_event(data) -> str:
     start = data.get("start") or {}
     start_dt = start.get("dateTime") or start.get("date") or ""
     return f'Created calendar event "{summary}" starting at {start_dt}.'
+
+
+def _render_updated_event(data) -> str:
+    """Render an updated calendar event only from a successful API response.
+
+    The rendered start comes from the authoritative Google response, so the
+    user sees the actual on-calendar state, never a guessed one.
+    """
+    event_id = data.get("id") or "(unknown id)"
+    start = data.get("start") or {}
+    start_dt = start.get("dateTime") or start.get("date") or ""
+    if start_dt:
+        return f"Updated calendar event {event_id} to {start_dt}."
+    return f"Updated calendar event {event_id}."
+
+
+def _event_start_mismatch(requested: dict, returned: dict) -> bool:
+    """True when a requested event start differs from the API-returned start.
+
+    A successful update must be evidenced by Google's authoritative response
+    reflecting the exact state the request asked for; a mismatch means the
+    change did not actually apply and no success may be claimed.
+    """
+    req = requested.get("dateTime") or requested.get("date")
+    ret = returned.get("dateTime") or returned.get("date")
+    if not req or not ret:
+        return False
+    return req != ret
 
 
 def _safe_sync_reason(error_text: str) -> str:
@@ -357,14 +389,17 @@ def _clear_recent_calendar_events() -> None:
 
 
 def _reminder_correction_intent(text: str) -> bool:
-    """True when the message corrects a just-created reminder's date.
+    """True when the message corrects a just-created reminder's date or time.
 
-    A correction is either reminder-worded and deictic ("add that reminder
-    for 29th august not 19th") or points at the reminder with the pronoun
-    "it" next to a date ("set it for 29 August", "you did it for 19, set it
-    for 29"). Fresh creations ("set a reminder for 29th august") and
-    unrelated messages that merely contain a number ("complete task 1",
-    "SEM 1 syllabus … 10 and 12 December") are never corrections.
+    A correction is reminder-worded and deictic ("add that reminder for 29th
+    august not 19th"), points at the reminder with the pronoun "it" ("set it
+    for 29 August", "Actually make it 11 AM"), or is a deictic change of a
+    concrete date ("Actually make that 30th August"). Fresh creations ("set a
+    reminder for 29th august") and unrelated messages that merely contain a
+    number ("complete task 1", "SEM 1 syllabus … 10 and 12 December") are
+    never corrections, nor are questions/complaints about the current calendar
+    state ("but the calendar still shows it on 29th") — those are not commands
+    to change anything.
     """
     lower = (text or "").lower()
     if not lower:
@@ -385,16 +420,31 @@ def _reminder_correction_intent(text: str) -> bool:
 
     from app.services.tools import find_month_day_phrase
 
-    has_date = (
-        find_month_day_phrase(lower) is not None
-        or re.search(r"\b\d{1,2}(?:st|nd|rd|th)?\b", lower) is not None
-    )
-    if not has_date:
+    has_month_day = find_month_day_phrase(lower) is not None
+    has_bare_day = re.search(r"\b\d{1,2}(?:st|nd|rd|th)?\b", lower) is not None
+    if not (has_month_day or has_bare_day):
+        return False
+
+    is_reminder = "reminder" in lower or "remind" in lower
+
+    # A message about a concrete, different artifact ("that meeting", "the
+    # exam", "task 1") is not about the reminder Orbit just created.
+    if not is_reminder and re.search(
+        r"\b(meeting|event|task|project|assignment|exam|class|lecture|call|"
+        r"interview|appointment|email|message|document)\b",
+        lower,
+    ):
+        return False
+
+    # A question/complaint about the current state ("but the calendar still
+    # shows it on 29th") is not a command to change anything.
+    if not is_reminder and any(
+        m in lower for m in ("still", "shows", "showing", "why is", "why does", "why did")
+    ):
         return False
 
     # Reminder-worded corrections (existing contract): deictic + a correction
     # or reschedule marker.
-    is_reminder = "reminder" in lower or "remind" in lower
     has_deictic = any(m in lower for m in ("that ", "this ", "the reminder", " it "))
     if is_reminder and has_deictic:
         corrects = any(
@@ -404,8 +454,16 @@ def _reminder_correction_intent(text: str) -> bool:
         reschedules = any(v in lower for v in _RESCHEDULE_VERBS)
         return corrects or reschedules
 
+    # Deictic change of a concrete date/time ("Actually make that 30th
+    # August", "make that 11 am") — the deictic "that"/"this" points at the
+    # reminder without needing a reminder word or the pronoun "it".
+    if has_deictic and any(v in lower for v in _CHANGE_VERBS):
+        if has_month_day or _reminder_correction_time(lower) is not None:
+            return True
+
     # Pronoun corrections: "set it for 29 August", "you did it for 19, set it
-    # for 29" — the user points at the reminder just created with "it".
+    # for 29", "Actually make it 11 AM" — the user points at the reminder just
+    # created with "it".
     return bool(re.search(r"\bit\b", lower))
 
 
@@ -437,6 +495,9 @@ def _reminder_correction_day(text: str) -> Optional[int]:
     'you did it for 19, set it for 29'  → 29
     'it was the 19th, make it the 29th' → 29
 
+    Numbers that are part of a clock time ("11 AM", "3:30 PM", "at 11") are
+    never days — a time-only correction must not become a bogus date.
+
     Returns None when the message carries no day-of-month.
     """
     lower = (text or "").lower()
@@ -447,8 +508,68 @@ def _reminder_correction_day(text: str) -> Optional[int]:
     )
     if match:
         return int(match.group(1))
-    days = [int(d) for d in re.findall(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", lower)]
+    without_times = re.sub(
+        r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b"
+        r"|\b\d{1,2}\s*(?:am|pm)\b"
+        r"|\bat\s+\d{1,2}(?::\d{2})?\b",
+        " ",
+        lower,
+    )
+    days = [int(d) for d in re.findall(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", without_times)]
     return days[-1] if days else None
+
+
+def _reminder_correction_time(text: str) -> Optional[str]:
+    """Extract a NEW clock time from a correction message, or None.
+
+    'Actually make it 11 AM'  → '11:00:00'
+    'make it at 3:30 pm'      → '15:30:00'
+    'change it to 2pm'        → '14:00:00'
+
+    A time-only correction keeps the reminder's own date; the bare-day path
+    must never misinterpret the time number as a day of the month.
+    """
+    from app.services.tools import _parse_time
+
+    lower = (text or "").lower()
+    match = re.search(r"\b(\d{1,2}):(\d{2})\s*(?:am|pm)?\b", lower)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return f"{hour:02d}:{minute:02d}:00"
+    match = re.search(r"\b(\d{1,2})\s*(am|pm)\b", lower)
+    if match:
+        hm = _parse_time(match.group(0))
+        if hm:
+            return f"{hm[0]:02d}:{hm[1]:02d}:00"
+    match = re.search(r"\bat\s+(\d{1,2})(?::(\d{2}))?\b", lower)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2) or 0)
+        if 1 <= hour <= 12 and 0 <= minute <= 59:
+            return f"{hour % 12:02d}:{minute:02d}:00"
+    return None
+
+
+def _reminder_artifact_date(artifact) -> Optional[str]:
+    """Date of the reminder being corrected, as 'YYYY-MM-DD' (for time-only
+    corrections, which must preserve the reminder's own date).
+
+    ``artifact`` is either a recent-event record dict (with a ``start``) or a
+    Task row (uses ``scheduled_start``/``deadline``).
+    """
+    iso = ""
+    if isinstance(artifact, dict):
+        start = artifact.get("start") or {}
+        iso = start.get("dateTime") or start.get("date") or ""
+    else:
+        dt = getattr(artifact, "scheduled_start", None) or getattr(artifact, "deadline", None)
+        iso = dt.isoformat() if dt else ""
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(str(iso).replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
 
 
 def _reminder_artifact_month(artifact) -> Optional[str]:
@@ -541,18 +662,29 @@ def _reminder_correction_plan(db: Session, text: str) -> Optional[Dict[str, Any]
         return None
 
     when = _reminder_correction_when(text)
+    start_time = None
     if not when:
-        day = _reminder_correction_day(text)
-        month_name = _reminder_artifact_month(target)
-        if day is None or not month_name:
-            return None
-        when = f"{day} {month_name}"
+        start_time = _reminder_correction_time(text)
+        if start_time:
+            # Time-only correction ("Actually make it 11 AM"): keep the
+            # reminder's own date and only move the clock time. The bare-day
+            # path must never reinterpret the time number as a day.
+            artifact_date = _reminder_artifact_date(target)
+            if not artifact_date:
+                return None
+            when = f"{artifact_date}T{start_time}"
+        else:
+            day = _reminder_correction_day(text)
+            month_name = _reminder_artifact_month(target)
+            if day is None or not month_name:
+                return None
+            when = f"{day} {month_name}"
 
     if isinstance(target, dict):
         body = build_calendar_event_body({
             "summary": target["summary"] or "(no title)",
             "when": when,
-            "start_time": None,
+            "start_time": start_time,
             "duration_minutes": 60,
             "timezone": SYSTEM_TIMEZONE,
         })
@@ -566,7 +698,7 @@ def _reminder_correction_plan(db: Session, text: str) -> Optional[Dict[str, Any]
         "args": {
             "task_id": target.id,
             "when": when,
-            "start_time": None,
+            "start_time": start_time,
             "duration_minutes": 60,
             "timezone": SYSTEM_TIMEZONE,
         },
@@ -2045,6 +2177,22 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                     return _calendar_operation_failure_message(tool_name)
                 return f"Tool '{tool_name}' failed: no result was returned."
 
+            # A calendar update may only be reported as success when Google's
+            # authoritative response reflects the exact state that was asked
+            # for. A mismatch means the change did not actually apply.
+            if tool_name == "update_calendar_event" and isinstance(data, dict):
+                requested_start = (args.get("event_data") or {}).get("start") or {}
+                returned_start = data.get("start") or {}
+                if _event_start_mismatch(requested_start, returned_start):
+                    logger.warning(
+                        "Calendar update '%s' did not apply: requested start=%s, "
+                        "returned start=%s",
+                        data.get("id"),
+                        requested_start,
+                        returned_start,
+                    )
+                    return _calendar_operation_failure_message("update_calendar_event")
+
             # Remember successful calendar writes so a follow-up correction can
             # deterministically target the reminder the user just made.
             if tool_name in ("create_calendar_event", "update_calendar_event"):
@@ -2114,9 +2262,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
             "create_calendar_event": lambda: _render_created_event(data),
 
-            "update_calendar_event": lambda: (
-                f"Updated calendar event {data['id']}."
-            ),
+            "update_calendar_event": lambda: _render_updated_event(data),
 
             "delete_calendar_event": lambda: (
                 f"Deleted calendar event {data['event_id']}."
