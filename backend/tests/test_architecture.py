@@ -218,11 +218,18 @@ def _read_frontend(relative):
     return (FRONTEND_DIR / relative).read_text(encoding="utf-8")
 
 
-def test_sidebar_has_no_documents_or_meetings():
-    sidebar = _read_frontend("components/Sidebar.jsx")
-    for expected in ("Dashboard", "Projects", "Tasks", "AI Chat", "Integrations", "Settings"):
+def test_sidebar_has_core_nav_and_no_meetings():
+    """The canonical Sidebar (components/layout/Sidebar.jsx) exposes the core
+    navigation, the first-class Documents module, and the Integrations entry —
+    but never a standalone Meetings module (meetings are Tasks). The sidebar
+    was relocated during the UI redesign (components/Sidebar.jsx moved to
+    components/layout/Sidebar.jsx) and its labels changed; this assertion is
+    updated to the current canonical implementation.
+    """
+    sidebar = _read_frontend("components/layout/Sidebar.jsx")
+    for expected in ("Overview", "Projects", "Tasks", "Orbit AI", "Settings", "/integrations"):
         assert expected in sidebar
-    assert "Documents" not in sidebar
+    assert "Documents" in sidebar
     assert "Meetings" not in sidebar
 
 
