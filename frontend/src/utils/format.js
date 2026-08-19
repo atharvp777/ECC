@@ -25,3 +25,53 @@ export function formatTime(iso) {
   if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
+
+function startOfDay(iso) {
+  const d = new Date(iso);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+/** True when a not-done task's deadline has already passed. */
+export function isOverdue(iso, done = false) {
+  if (done || !iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  return d < new Date();
+}
+
+/** "Due today" or a short date like "Aug 24". Returns null when unset/invalid. */
+export function formatDeadline(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  if (startOfDay(iso).getTime() === startOfDay(new Date().toISOString()).getTime()) return "Due today";
+  return formatShortDate(iso);
+}
+
+/** "2 days overdue" (calendar-day diff). Falls back to "Overdue" for <1 day. */
+export function formatOverdue(iso) {
+  if (!iso) return "Overdue";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Overdue";
+  const days = Math.round((startOfDay(new Date().toISOString()) - startOfDay(iso)) / 86400000);
+  if (days < 1) return "Overdue";
+  return days === 1 ? "1 day overdue" : `${days} days overdue`;
+}
+
+/** "Scheduled Aug 21 · 10:00–11:00" from a task's scheduled_start/end. */
+export function formatScheduled(task = {}) {
+  const date = formatShortDate(task.scheduled_start);
+  const start = formatTime(task.scheduled_start);
+  const end = formatTime(task.scheduled_end);
+  if (date && start && end) return `Scheduled ${date} · ${start}–${end}`;
+  if (date) return `Scheduled ${date}`;
+  return "Scheduled";
+}
+
+/** "Aug 21 · 10:00" for created/updated metadata. Falls back to "—". */
+export function dateTimeLabel(iso) {
+  const date = formatShortDate(iso);
+  if (!date) return "—";
+  const time = formatTime(iso);
+  return time ? `${date} · ${time}` : date;
+}
