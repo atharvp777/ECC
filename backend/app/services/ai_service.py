@@ -1015,14 +1015,46 @@ def _identify_document_project(db: Session, text: str) -> Optional[object]:
     return best if best_score > 0 else None
 
 
-def _project_document_context(db: Session, messages: List[dict]) -> str:
+def _resolve_context_project(
+    db: Session, messages: List[dict], project_id: Optional[int] = None
+) -> Optional[object]:
+    """Resolve the project a document/image content request refers to.
+
+    When an explicit ``project_id`` is provided (the project-scoped AI
+    workspace) the project is resolved by ID — deterministic and never broader
+    than the user's selection. The backend stays authoritative: a missing id
+    resolves to no project, so a bogus/foreign id can never pull in another
+    project's documents or images. Without an id (global chat) the existing
+    fuzzy conversation inference is used, so follow-ups still resolve.
+    """
+    if project_id is not None:
+        from app.models.project import Project
+
+        project = db.query(Project).filter(Project.id == project_id).first()
+        if project is None:
+            logger.warning(
+                "Chat request carried project_id=%s but no such project exists; "
+                "scoping document/image lookup to no project.",
+                project_id,
+            )
+        return project
+
+    convo = "\n".join(m.get("content", "") for m in messages if m.get("content"))
+    return _identify_document_project(db, convo)
+
+
+def _project_document_context(
+    db: Session, messages: List[dict], project_id: Optional[int] = None
+) -> str:
     """Extract the relevant project document text for the chat fallback prompt.
 
     Returns an empty string when the user is not asking about document
     contents, when no project can be identified, or when the project has no
     documents. The payload is bounded so full document contents are never sent
     on every request. Missing files and unsupported formats are handled
-    gracefully (the document is skipped with a note).
+    gracefully (the document is skipped with a note). When ``project_id`` is
+    given (project-scoped AI workspace) the lookup is constrained to that
+    exact project instead of fuzzy conversation inference.
     """
     if not messages:
         return ""
@@ -1036,8 +1068,7 @@ def _project_document_context(db: Session, messages: List[dict]) -> str:
     if not _wants_document_content(last_user):
         return ""
 
-    convo = "\n".join(m.get("content", "") for m in messages if m.get("content"))
-    project = _identify_document_project(db, convo)
+    project = _resolve_context_project(db, messages, project_id)
     if project is None or not project.documents:
         return ""
 
@@ -1139,17 +1170,42 @@ def _valid_image_bytes(data: bytes, mime_type: str) -> bool:
     return False
 
 
-def _select_images(documents: List) -> tuple:
+def _named_image_filenames(text: str) -> set:
+    """Explicit image filenames the user names in a message ("tt.jpeg").
+
+    Used to prioritize exactly the image the user asked about when a project
+    holds more images than the inspection cap. Returns lowercased names.
+    """
+    return {name.lower() for name in re.findall(r"(?i)\b[\w.-]+\.(?:png|jpe?g|webp)\b", text or "")}
+
+
+def _select_images(documents: List, preferred_names: Optional[set] = None) -> tuple:
     """Deterministic, bounded selection of project images to send to the model.
 
     Returns ``(selected, skipped)``. Missing/corrupt/oversized files are
     skipped without raising; ordering is by filename so the selection is
-    stable across identical requests.
+    stable across identical requests. Images whose filename the user explicitly
+    named (``preferred_names``) are selected first, so a request like "extract
+    the dates from tt.jpeg" sends tt.jpeg even when the project holds more
+    images than the count cap.
     """
+    preferred_names = preferred_names or set()
+
+    def _display_name(doc) -> str:
+        return doc.original_filename or doc.filename
+
+    def _sort_key(doc) -> str:
+        return _display_name(doc) or ""
+
+    ordered_docs = sorted(documents, key=_sort_key)
+    preferred = [d for d in ordered_docs if _display_name(d).lower() in preferred_names]
+    others = [d for d in ordered_docs if _display_name(d).lower() not in preferred_names]
+    ordered = preferred + others
+
     selected: List[Dict] = []
     skipped = 0
     total = 0
-    for doc in sorted(documents, key=lambda d: (d.original_filename or d.filename)):
+    for doc in ordered:
         if len(selected) >= _MAX_IMAGES_PER_INSPECTION:
             skipped += 1
             continue
@@ -1199,15 +1255,21 @@ def _image_context_block(project_name: str, selected: List, skipped: int) -> str
     return "\n".join(lines)
 
 
-def _project_image_context(db: Session, messages: List[dict]) -> Optional[dict]:
+def _project_image_context(
+    db: Session, messages: List[dict], project_id: Optional[int] = None
+) -> Optional[dict]:
     """Resolve an image-content request to the identified project's image bytes.
 
-    Returns ``None`` when the turn is not asking about image contents. Otherwise
-    returns a dict:
+    Returns ``None`` when the turn is not asking about image contents or no
+    project can be resolved. Otherwise returns a dict:
       - ``note``: an honest user-facing message when inspection cannot happen
         (no images found, unreadable files, provider without vision support).
       - ``block`` + ``images``: the untrusted-reference framing block and the
         bounded list of loaded image bytes for a vision-capable provider.
+
+    When ``project_id`` is given (project-scoped AI workspace) the lookup is
+    constrained to that exact project instead of fuzzy conversation inference;
+    a bogus id resolves to no project, never to another project's images.
     """
     if not messages:
         return None
@@ -1218,8 +1280,7 @@ def _project_image_context(db: Session, messages: List[dict]) -> Optional[dict]:
     if not _wants_image_content(last_user):
         return None
 
-    convo = "\n".join(m.get("content", "") for m in messages if m.get("content"))
-    project = _identify_document_project(db, convo)
+    project = _resolve_context_project(db, messages, project_id)
     if project is None:
         return None
 
@@ -1233,7 +1294,7 @@ def _project_image_context(db: Session, messages: List[dict]) -> Optional[dict]:
     if not supports_vision():
         return {"block": "", "images": [], "note": VISION_UNAVAILABLE_MESSAGE}
 
-    selected, skipped = _select_images(image_docs)
+    selected, skipped = _select_images(image_docs, _named_image_filenames(last_user))
     if not selected:
         return {
             "block": "",
@@ -1994,7 +2055,9 @@ def _synthesize_day_plan(day_plan, user_message: str) -> str:
         logger.warning("Day plan presentation failed; using deterministic summary: %s", exc)
     return _render_day_plan_text(day_plan)
 
-def chat_with_ai(messages: List[dict], db: Session) -> str:
+def chat_with_ai(
+    messages: List[dict], db: Session, project_id: Optional[int] = None
+) -> str:
     """
     Main entry point used by the chat router.
     1️⃣ Build the normal context (projects, tasks, notes, calendar).
@@ -2002,6 +2065,12 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
     3️⃣ If present, dispatch to ``execute_tool`` and turn the result into
        a natural‑language reply.
     4️⃣ Otherwise fall back to the original LLM call.
+
+    ``project_id`` is the optional explicit project scope from the project-scoped
+    AI workspace. It is DATA/context (the user's project selection), never
+    authorization: it only constrains the on-demand document/image lookup to
+    that project (``_project_image_context`` / ``_project_document_context``).
+    Omitted → global chat behavior with the existing fuzzy project inference.
     """
     # Client-supplied roles are untrusted: only user/assistant turns are ever
     # forwarded to the model. A forged "system" message must never reach the
@@ -2334,7 +2403,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
         return ai_provider_configured_message()
 
     try:
-        image_context = _project_image_context(db, messages)
+        image_context = _project_image_context(db, messages, project_id)
         if image_context is not None:
             if image_context["note"] is not None:
                 return image_context["note"]
@@ -2349,7 +2418,7 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
                 raise ValueError("AI returned an empty or malformed response")
             return content
 
-        doc_context = _project_document_context(db, messages)
+        doc_context = _project_document_context(db, messages, project_id)
         content = complete_text(
             system=SYSTEM_PROMPT + context + doc_context,
             messages=messages[-_MAX_HISTORY_MESSAGES:],

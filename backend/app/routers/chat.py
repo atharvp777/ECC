@@ -1,4 +1,5 @@
 import logging
+from typing import Optional
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from app.services.ai_service import chat_with_ai, AIServiceError
@@ -18,6 +19,11 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[Message]
+    # Optional project scope from the project-scoped AI workspace. This is a
+    # DATA/context signal (the user's project selection), never authorization:
+    # the backend resolves it against the DB and uses it only to constrain
+    # document/image lookup to that project. Omitted → global chat behavior.
+    project_id: Optional[int] = None
 
 # -------------------------------------------------
 # AI provider status
@@ -55,7 +61,7 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     ]
 
     try:
-        reply = chat_with_ai(messages, db)
+        reply = chat_with_ai(messages, db, project_id=payload.project_id)
     except AIServiceError as exc:
         # The service already logged the root cause and produced a safe message.
         reply = str(exc)

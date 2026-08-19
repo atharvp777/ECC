@@ -370,4 +370,29 @@ describe("Project Orbit AI tab", () => {
     expect(body.messages).toContainEqual(expect.objectContaining({ role: "user", content: "Summarize the project" }));
     expect(await screen.findByText("Here is your project summary.")).toBeInTheDocument();
   });
+
+  it("sends the project id as an explicit context signal with no binary payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: () => Promise.resolve({ reply: "ok" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = await openAi();
+    await user.type(screen.getByLabelText("Project AI message"), "Summarize the project");
+    await user.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.project_id).toBe(1);
+    // The request body carries only text messages — image bytes never leave the
+    // backend and never enter the chat history that the UI stores.
+    for (const message of body.messages) {
+      expect(typeof message.content).toBe("string");
+      expect(message.content).not.toContain("inline_data");
+      expect(message.content).not.toContain("data:");
+    }
+    expect(JSON.stringify(body)).not.toMatch(/\\u0000|base64|image\/(png|jpeg|webp)/);
+  });
 });

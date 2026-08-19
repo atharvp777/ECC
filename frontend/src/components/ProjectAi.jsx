@@ -46,6 +46,7 @@ export default function ProjectAi({ project }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          project_id: project?.id ?? null,
           messages: [{ role: "user", content: context }, ...next],
         }),
       });
