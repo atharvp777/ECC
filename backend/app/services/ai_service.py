@@ -104,6 +104,16 @@ def _is_calendar_write_request(text: str) -> bool:
     ):
         return True
 
+    # 2b. A reminder pinned to a concrete day of a month ("29th august") is
+    # just as much a scheduled calendar write as "remind me tomorrow" — the
+    # server-side write guards must see it too, or a planner mis-route would
+    # silently lose the reminder as a plain task.
+    if ("remind" in lower or "reminder" in lower):
+        from app.services.tools import find_month_day_phrase
+
+        if find_month_day_phrase(lower) is not None:
+            return True
+
     # 3. Scheduling/appointment wording.
     if any(
         v in lower

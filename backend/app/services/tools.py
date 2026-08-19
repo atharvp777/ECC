@@ -209,8 +209,8 @@ def _parse_time(phrase: str) -> Optional[tuple]:
 
 
 def find_month_day_phrase(text: str) -> Optional[str]:
-    """Return the verbatim day+month substring ('29th august', 'august 29')
-    from a phrase, or None.
+    """Return the verbatim day+month substring ('29th august', 'august 29'),
+    including an explicit 4-digit year when present, from a phrase; or None.
 
     Used by the follow-up correction flow so the user's own date wording is
     handed to the date resolver verbatim.
@@ -219,8 +219,8 @@ def find_month_day_phrase(text: str) -> Optional[str]:
         return None
     lowered = text.lower()
     for pattern in (
-        r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?(" + "|".join(_MONTHS) + r")\b",
-        r"(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+        r"(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?(" + "|".join(_MONTHS) + r")\b(?:\s+\d{4})?",
+        r"(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s+\d{4})?",
     ):
         match = re.search(pattern, lowered)
         if match:
@@ -230,28 +230,41 @@ def find_month_day_phrase(text: str) -> Optional[str]:
 
 def _resolve_month_day(text: str, today: date) -> Optional[date]:
     """Resolve a day-of-month + month-name phrase like '29th august' or
-    'august 29' against ``today``. Past dates roll to the next year.
+    'august 29' against ``today``. Past dates roll to the next year UNLESS the
+    phrase names an explicit 4-digit year, which is honored verbatim.
 
     Returns None when the phrase contains no month/day combination.
     """
-    # Day-first: "29th august", "29 august", "29th of august", "29th on august".
+    # Day-first: "29th august", "29 august", "29th of august", "29th on august",
+    # optionally followed by an explicit year ("29 august 2027").
     day_first = re.search(
-        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?(" + "|".join(_MONTHS) + r")\b",
+        r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+|on\s+)?("
+        + "|".join(_MONTHS)
+        + r")\b(?:\s+(\d{4}))?",
         text,
     )
     if day_first:
         day, month_name = int(day_first.group(1)), day_first.group(2)
+        year = day_first.group(3)
     else:
-        # Month-first: "august 29", "august 29th".
+        # Month-first: "august 29", "august 29th", optionally with a year.
         month_first = re.search(
-            r"\b(" + "|".join(_MONTHS) + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b",
+            r"\b("
+            + "|".join(_MONTHS)
+            + r")\s+(\d{1,2})(?:st|nd|rd|th)?\b(?:\s+(\d{4}))?",
             text,
         )
         if not month_first:
             return None
         month_name, day = month_first.group(1), int(month_first.group(2))
+        year = month_first.group(3)
 
     month = _MONTHS[month_name]
+    if year:
+        try:
+            return date(int(year), month, day)
+        except ValueError:
+            return None
     try:
         candidate = date(today.year, month, day)
     except ValueError:
@@ -830,9 +843,12 @@ def update_task(db: Session, req: UpdateTaskRequest) -> Dict[str, Any]:
     update_data.pop("task_title", None)
     # A planner may emit null/empty for fields it doesn't intend to change.
     # Never apply a blank to enum/status columns or the NOT NULL title — those
-    # nulls are spurious, not "clear" intents. deadline / description / the
-    # schedule fields keep their explicit-clear semantics.
-    for key in ("title", "status", "priority", "task_type"):
+    # nulls are spurious, not "clear" intents. The natural-language
+    # deadline_when is planner-facing: a null/blank there means "no deadline
+    # change", so it must never erase an existing deadline. The explicit ISO
+    # ``deadline`` field keeps its explicit-clear semantics. description and
+    # the schedule fields keep their explicit-clear semantics.
+    for key in ("title", "status", "priority", "task_type", "deadline_when"):
         if update_data.get(key) in (None, ""):
             update_data.pop(key, None)
 
@@ -989,7 +1005,10 @@ def bulk_update_tasks(db: Session, req: BulkUpdateTasksRequest) -> Dict[str, Any
         query = db.query(Task.id)
         if req.project_id is not None:
             query = query.filter(Task.project_id == req.project_id)
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        # Stored deadlines are naive system-timezone (Asia/Kolkata) wall-clock
+        # values; compare against the SAME wall clock, not UTC, or tasks overdue
+        # by up to 5h30m are missed.
+        now = datetime.now(ZoneInfo(SYSTEM_TIMEZONE)).replace(tzinfo=None)
         if req.scope == "overdue":
             query = query.filter(Task.deadline < now, Task.status != TaskStatus.DONE)
         elif req.scope == "all_open":

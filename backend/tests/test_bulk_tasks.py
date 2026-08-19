@@ -113,6 +113,33 @@ def test_bulk_overdue_scope(db_session):
     assert future.status == TaskStatus.TODO
 
 
+def test_bulk_overdue_scope_uses_system_timezone(db_session):
+    """Stored deadlines are naive system-timezone (Asia/Kolkata) wall-clock
+    values. The overdue scope must compare against the system-timezone wall
+    clock — never UTC — or tasks overdue by up to 5h30m are silently missed."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    proj = _project(db_session)
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+    # 3 hours ago IST wall-clock: overdue in IST, but still "in the future"
+    # when compared to the UTC wall clock (IST = UTC + 5:30).
+    borderline = _task(
+        db_session, "borderline", project=proj, deadline=now_ist - timedelta(hours=3)
+    )
+    future = _task(
+        db_session, "future", project=proj, deadline=now_ist + timedelta(days=1)
+    )
+
+    result = _bulk(db_session, scope="overdue", status="done")
+
+    assert result["data"]["updated_count"] == 1
+    db_session.refresh(borderline)
+    db_session.refresh(future)
+    assert borderline.status == TaskStatus.DONE
+    assert future.status == TaskStatus.TODO
+
+
 def test_bulk_critical_scope(db_session):
     proj = _project(db_session)
     crit = _task(db_session, "crit", project=proj, priority="critical")

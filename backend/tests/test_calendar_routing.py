@@ -186,9 +186,13 @@ def test_calendar_write_request_detector():
     assert _is_calendar_write_request("schedule a meeting tomorrow")
     assert _is_calendar_write_request("add this to my calendar")
     assert _is_calendar_write_request("remind me tomorrow at 9am to call the team")
+    assert _is_calendar_write_request("on 29th on august remind me of selling DamCapital shares")
+    assert _is_calendar_write_request("remind me to file taxes by 15th july")
     assert not _is_calendar_write_request("create a task to finish the wiring diagram")
     assert not _is_calendar_write_request("what's on my calendar?")
     assert not _is_calendar_write_request("remind me to review the PR")
+    assert not _is_calendar_write_request("remind me about the august team meeting")
+    assert not _is_calendar_write_request("remind me to review the PR on the 29th")
 
 
 # ----------------------------------------------------------------------
