@@ -4,6 +4,10 @@ import { API_BASE_URL } from "../config";
 // Dashboard
 export const getDashboardStats = () => api.get("/dashboard/stats").then(r => r.data);
 
+// Planning (deterministic, read-only)
+export const getPlanningToday = () => api.get("/planning/today").then(r => r.data);
+export const getPlanningDay = () => api.get("/planning/day").then(r => r.data);
+
 // Projects
 export const getProjects = () => api.get("/projects/").then(r => r.data);
 export const getProject = (id) => api.get(`/projects/${id}`).then(r => r.data);

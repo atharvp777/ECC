@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import AppShell from "./components/layout/AppShell";
-import Dashboard from "./pages/Dashboard";
+import Overview from "./pages/Overview";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Tasks from "./pages/Tasks";
@@ -16,7 +16,7 @@ export default function App() {
     <BrowserRouter>
       <AppShell>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={<Overview />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
           <Route path="/tasks" element={<Tasks />} />
@@ -26,7 +26,7 @@ export default function App() {
           <Route path="/chat" element={<Chat />} />
           <Route path="/integrations" element={<Integrations />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Dashboard />} />
+          <Route path="*" element={<Overview />} />
         </Routes>
       </AppShell>
     </BrowserRouter>
