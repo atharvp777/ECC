@@ -1,310 +1,192 @@
-import React, { useState, useRef, useEffect } from "react";
-import ReactMarkdown from "react-markdown";
-import { formatAssistantContent } from "../utils/chatFormatting";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { API_BASE_URL } from "../config";
+import { getProjects, getTasks, getDocuments, getIntegrationStatus } from "../api";
+import ChatEmptyState from "../components/chat/ChatEmptyState";
+import ChatMessageList from "../components/chat/ChatMessageList";
+import ChatComposer from "../components/chat/ChatComposer";
+import ChatContextPanel from "../components/chat/ChatContextPanel";
 
 const CHAT_STORAGE_KEY = "ecc_chat_messages";
 
+function loadInitialMessages() {
+  try {
+    const stored = sessionStorage.getItem(CHAT_STORAGE_KEY);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (message) =>
+        message &&
+        typeof message === "object" &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
+function postChat(convo) {
+  return fetch(`${API_BASE_URL}/api/chat/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: convo }),
+  }).then(async (response) => {
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await response.json()
+      : { reply: await response.text() };
+    return { ok: response.ok, status: response.status, data };
+  });
+}
+
+function offlineMessage() {
+  return window.navigator.onLine
+    ? "Couldn't reach the backend. Make sure it's running, then try again."
+    : "You're offline. Reconnect to send messages.";
+}
+
 export default function Chat() {
-  const initialMessage = {
-    role: "assistant",
-    content:
-      "Hey Atharv 👋 I'm your Orbit AI.\n\nI have live access to your projects, tasks, notes, and documents.",
-  };
-  const [messages, setMessages] = useState(() => {
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState(loadInitialMessages);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [lastError, setLastError] = useState(null);
+  const [aiStatus, setAiStatus] = useState("checking");
+  const [contextOpen, setContextOpen] = useState(() => {
     try {
-      const stored = sessionStorage.getItem(CHAT_STORAGE_KEY);
-      if (!stored) return [initialMessage];
-
-      const parsed = JSON.parse(stored);
-      if (!Array.isArray(parsed) || parsed.length === 0) return [initialMessage];
-
-      const sanitized = parsed.filter(
-        (message) =>
-          message &&
-          typeof message === "object" &&
-          (message.role === "user" || message.role === "assistant") &&
-          typeof message.content === "string"
+      return (
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(min-width: 900px)").matches
       );
-
-      return sanitized.length > 0 ? sanitized : [initialMessage];
     } catch {
-      return [initialMessage];
+      return false;
     }
   });
-const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [modelIndicator, setModelIndicator] = useState("Loading AI model…");
-  const [online, setOnline] = useState(null);
-  const messagesEndRef = useRef(null);
-  const contextInfo = "Live project context loaded";
+  const [context, setContext] = useState({
+    loaded: false,
+    projects: [],
+    tasks: [],
+    documents: [],
+    calendarConnected: null,
+  });
+
+  const contextToggleRef = useRef(null);
 
   useEffect(() => {
+    let cancelled = false;
     fetch(`${API_BASE_URL}/api/chat/status`)
-      .then((r) => {
-        if (r.ok) {
-          setOnline(true);
-          return r.json();
-        }
-        setOnline(false);
-        return null;
-      })
+      .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
-        if (data && data.display) setModelIndicator(data.display);
-        else setModelIndicator("AI model unavailable");
+        if (cancelled) return;
+        setAiStatus(data && data.configured ? "online" : "unavailable");
       })
       .catch(() => {
-        setOnline(false);
-        setModelIndicator("AI model unavailable");
+        if (!cancelled) setAiStatus("unavailable");
       });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const styles = {
-    shell: {
-      display: "flex",
-      flexDirection: "column",
-      minHeight: "calc(100vh - 100px)",
-      height: "100%",
-      padding: 18,
-      gap: 12,
-      background: "var(--surface)",
-      border: "1px solid var(--border)",
-      borderRadius: 12,
-    },
-    header: {
-      display: "flex",
-      alignItems: "flex-start",
-      justifyContent: "space-between",
-      gap: 16,
-      flexShrink: 0,
-    },
-    headerRight: {
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "flex-end",
-      gap: 8,
-      flexShrink: 0,
-    },
-    headerCopy: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 6,
-      minWidth: 0,
-    },
-    titleRow: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      minWidth: 0,
-    },
-    title: {
-      fontSize: 16,
-      fontWeight: 700,
-      lineHeight: 1.2,
-      letterSpacing: "-0.01em",
-    },
-    onlinePill: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: 6,
-      padding: "4px 10px",
-      borderRadius: 999,
-      border: "1px solid rgba(34, 197, 94, 0.25)",
-      background: "rgba(34, 197, 94, 0.08)",
-      color: "#9ef0bc",
-      fontSize: 11,
-      fontWeight: 600,
-      whiteSpace: "nowrap",
-    },
-    onlineDot: {
-      width: 7,
-      height: 7,
-      borderRadius: "50%",
-      background: "var(--success)",
-      boxShadow: "0 0 0 3px rgba(34, 197, 94, 0.12)",
-      flexShrink: 0,
-    },
-    metaLine: {
-      display: "flex",
-      flexWrap: "wrap",
-      gap: 8,
-      alignItems: "center",
-    },
-    metaItem: {
-      display: "inline-flex",
-      alignItems: "center",
-      padding: "4px 10px",
-      borderRadius: 999,
-      background: "rgba(100, 116, 139, 0.12)",
-      border: "1px solid var(--border)",
-      color: "var(--muted)",
-      fontSize: 11,
-      fontWeight: 600,
-      whiteSpace: "nowrap",
-    },
-    metaAccent: {
-      background: "rgba(79, 124, 255, 0.14)",
-      color: "#9db7ff",
-      borderColor: "rgba(79, 124, 255, 0.18)",
-    },
-    clearButton: {
-      background: "transparent",
-      border: "none",
-      boxShadow: "none",
-      color: "var(--muted)",
-      padding: "6px 8px",
-      borderRadius: 999,
-      fontSize: 12,
-      fontWeight: 600,
-      lineHeight: 1,
-      alignSelf: "flex-end",
-      flexShrink: 0,
-    },
-    stream: {
-      flex: 1,
-      minHeight: 0,
-      overflowY: "auto",
-      display: "flex",
-      flexDirection: "column",
-      gap: 12,
-      padding: "4px 2px 10px",
-      scrollbarGutter: "stable",
-    },
-    row: {
-      display: "flex",
-      alignItems: "flex-end",
-      gap: 10,
-    },
-    rowUser: {
-      justifyContent: "flex-end",
-    },
-    avatar: {
-      width: 28,
-      height: 28,
-      borderRadius: 999,
-      display: "grid",
-      placeItems: "center",
-      background: "rgba(79, 124, 255, 0.16)",
-      border: "1px solid rgba(79, 124, 255, 0.28)",
-      color: "#9db7ff",
-      fontSize: 10,
-      fontWeight: 800,
-      letterSpacing: "0.05em",
-      flexShrink: 0,
-    },
-    bubble: {
-      maxWidth: "78%",
-      padding: "12px 14px",
-      borderRadius: 16,
-      border: "1px solid transparent",
-      wordBreak: "break-word",
-      lineHeight: 1.55,
-      fontSize: 13,
-    },
-    bubbleAssistant: {
-      background: "var(--surface2)",
-      borderColor: "var(--border)",
-      color: "var(--text)",
-      borderTopLeftRadius: 8,
-    },
-    bubbleUser: {
-      background: "rgba(79, 124, 255, 0.14)",
-      borderColor: "rgba(79, 124, 255, 0.18)",
-      color: "#eff4ff",
-      borderTopRightRadius: 8,
-      whiteSpace: "pre-wrap",
-    },
-    composer: {
-      position: "sticky",
-      bottom: 0,
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      padding: 12,
-      borderRadius: 16,
-      background: "rgba(20, 23, 32, 0.96)",
-      border: "1px solid var(--border)",
-      boxShadow: "0 10px 30px rgba(0, 0, 0, 0.22)",
-    },
-    input: {
-      flex: 1,
-      minWidth: 0,
-      height: 46,
-      borderRadius: 12,
-      border: "1px solid var(--border)",
-      background: "var(--surface2)",
-      color: "var(--text)",
-      boxShadow: "none",
-      padding: "0 14px",
-      outline: "none",
-      fontSize: 13,
-    },
-    sendButton: {
-      minWidth: 88,
-      height: 46,
-      borderRadius: 12,
-      boxShadow: "none",
-      justifyContent: "center",
-    },
-  };
-
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+    let cancelled = false;
+    Promise.all([getProjects(), getTasks(), getDocuments(), getIntegrationStatus()])
+      .then(([projects, tasks, documents, status]) => {
+        if (cancelled) return;
+        setContext({
+          loaded: true,
+          projects: Array.isArray(projects) ? projects : [],
+          tasks: Array.isArray(tasks) ? tasks : [],
+          documents: Array.isArray(documents) ? documents : [],
+          calendarConnected: Boolean(status && status.google_calendar),
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setContext({
+          loaded: true,
+          projects: [],
+          tasks: [],
+          documents: [],
+          calendarConnected: null,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     try {
       sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
     } catch {
-      // Ignore storage failures and keep chat functional.
+      // Keep chat functional if storage is unavailable.
     }
   }, [messages]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  };
+  useEffect(() => {
+    if (!contextOpen) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") {
+        setContextOpen(false);
+        contextToggleRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [contextOpen]);
 
-  const send = async () => {
-    const userMsg = input.trim();
+  const send = async (override) => {
+    const userMsg = (override ?? input).trim();
     if (!userMsg || loading) return;
     setInput("");
-    const newMessages = [...messages, { role: "user", content: userMsg }];
-    setMessages(newMessages);
+    setLastError(null);
+    const next = [...messages, { role: "user", content: userMsg }];
+    setMessages(next);
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/chat/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages }),
-      });
-      const contentType = response.headers.get("content-type") || "";
-      const data = contentType.includes("application/json")
-        ? await response.json()
-        : { reply: await response.text() };
-
-      if (!response.ok) {
-        const errorMessage = data.detail || data.reply || data.error || `Request failed (${response.status})`;
+      const { ok, data } = await postChat(next);
+      if (!ok) {
+        const errorMessage =
+          data.detail || data.reply || data.error || `Request failed (${data.status || "error"})`;
         setMessages((prev) => [...prev, { role: "assistant", content: errorMessage }]);
-        setLoading(false);
-        scrollToBottom();
+        setLastError(userMsg);
         return;
       }
-
       setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-      setLoading(false);
-      scrollToBottom();
-} catch (err) {
-      console.error(err);
-      const offline = err instanceof TypeError && !window.navigator.onLine;
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          content: offline
-            ? "You're offline. Reconnect to send messages."
-            : "Couldn't reach the backend. Make sure it's running, then try again.",
-        },
+        { role: "assistant", content: offlineMessage() },
       ]);
+      setLastError(userMsg);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const retry = async () => {
+    if (!lastError || loading) return;
+    const convo = messages.slice(0, -1);
+    setLoading(true);
+    try {
+      const { ok, data } = await postChat(convo);
+      if (!ok) {
+        const errorMessage =
+          data.detail || data.reply || data.error || "Request failed";
+        setMessages((prev) => [...prev, { role: "assistant", content: errorMessage }]);
+        return;
+      }
+      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      setLastError(null);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: offlineMessage() },
+      ]);
+    } finally {
       setLoading(false);
     }
   };
@@ -313,103 +195,131 @@ const [input, setInput] = useState("");
     try {
       sessionStorage.removeItem(CHAT_STORAGE_KEY);
     } catch {
-      // Ignore storage failures and reset local state.
+      // Reset local state regardless.
     }
-    setMessages([initialMessage]);
+    setMessages([]);
+    setInput("");
+    setLastError(null);
   };
 
-  const statusPill =
-    online === null
-      ? { label: "Connecting…", title: "Checking backend connection", border: "rgba(100,116,139,0.25)", bg: "rgba(100,116,139,0.08)", color: "var(--muted)", dot: "var(--muted)", glow: "rgba(100,116,139,0.12)" }
-      : online
-        ? { label: "Online", title: "Connected", border: "rgba(34,197,94,0.25)", bg: "rgba(34,197,94,0.08)", color: "#9ef0bc", dot: "var(--success)", glow: "rgba(34,197,94,0.12)" }
-        : { label: "Offline", title: "Backend unavailable", border: "rgba(239,68,68,0.25)", bg: "rgba(239,68,68,0.08)", color: "#fca5a5", dot: "var(--danger)", glow: "rgba(239,68,68,0.12)" };
+  const confirmSchedule = () => {
+    send("Schedule the recommended plan.");
+  };
+
+  const statusLabel =
+    aiStatus === "online"
+      ? "AI online"
+      : aiStatus === "unavailable"
+        ? "AI unavailable"
+        : "Checking…";
 
   return (
-    <div className="chat-page" style={styles.shell}>
-      <div style={styles.header}>
-        <div style={styles.headerCopy}>
-          <div style={styles.titleRow}>
-            <h2 style={styles.title}>AI Chat</h2>
-          </div>
-          <div style={styles.metaLine}>
-            <span style={styles.metaItem}>{modelIndicator}</span>
-            <span style={{ ...styles.metaItem, ...styles.metaAccent }}>{contextInfo}</span>
-          </div>
+    <div className="orbit-chat">
+      <header className="orbit-chat__header">
+        <div className="orbit-chat__heading">
+          <h1 className="orbit-chat__title">
+            <span className="orbit-chat__mark" aria-hidden="true">✦</span> Orbit AI
+          </h1>
+          <p className="orbit-chat__subtitle">Your intelligent engineering workspace.</p>
         </div>
-
-        <div style={styles.headerRight}>
-          <div
-            style={{ ...styles.onlinePill, border: `1px solid ${statusPill.border}`, background: statusPill.bg, color: statusPill.color }}
-            title={statusPill.title}
+        <div className="orbit-chat__header-actions">
+          <span
+            className={`orbit-chat__status orbit-chat__status--${aiStatus}`}
+            role="status"
           >
-            <span style={{ ...styles.onlineDot, background: statusPill.dot, boxShadow: `0 0 0 3px ${statusPill.glow}` }} />
-            {statusPill.label}
-          </div>
-          <button style={styles.clearButton} type="button" onClick={clearChat}>
+            <span className="orbit-chat__status-dot" aria-hidden="true" />
+            {statusLabel}
+          </span>
+          <button
+            type="button"
+            className="orbit-btn orbit-btn--secondary orbit-btn--sm orbit-chat__context-toggle"
+            aria-expanded={contextOpen}
+            aria-controls="orbit-chat-context"
+            ref={contextToggleRef}
+            onClick={() => setContextOpen((value) => !value)}
+          >
+            Context
+          </button>
+          <button
+            type="button"
+            className="orbit-btn orbit-btn--ghost orbit-btn--sm"
+            onClick={clearChat}
+          >
             Clear Chat
           </button>
         </div>
-      </div>
+      </header>
 
-      <div style={styles.stream}>
-        {messages.map((msg, idx) => (
+      <div className="orbit-chat__layout">
+        <div className="orbit-chat__main">
           <div
-            key={idx}
-            style={{
-              ...styles.row,
-              ...(msg.role === "user" ? styles.rowUser : null),
-            }}
+            className="orbit-chat__conversation"
+            role="log"
+            aria-live="polite"
+            aria-busy={loading}
           >
-            {msg.role === "assistant" && (
-              <div style={styles.avatar} aria-hidden="true">
-                AI
-              </div>
+            {messages.length === 0 ? (
+              <ChatEmptyState onSuggestion={send} />
+            ) : (
+              <ChatMessageList
+                messages={messages}
+                loading={loading}
+                onNavigate={navigate}
+                onConfirm={confirmSchedule}
+              />
             )}
-            <div
-              style={{
-                ...styles.bubble,
-                ...(msg.role === "user" ? styles.bubbleUser : styles.bubbleAssistant),
-              }}
-            >
-              {msg.role === "assistant" ? (
-                <div className="chat-markdown">
-                  <ReactMarkdown>{formatAssistantContent(msg.content)}</ReactMarkdown>
-                </div>
-              ) : (
-                msg.content
-              )}
-            </div>
           </div>
-        ))}
-        <div ref={messagesEndRef} />
+
+          {lastError && !loading && (
+            <div className="orbit-chat__error" role="alert">
+              <span className="orbit-chat__error-text">
+                That message failed. You can retry.
+              </span>
+              <button
+                type="button"
+                className="orbit-btn orbit-btn--secondary orbit-btn--sm"
+                onClick={retry}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          <ChatComposer
+            value={input}
+            onChange={setInput}
+            onSend={send}
+            loading={loading}
+          />
+        </div>
+
+        <ChatContextPanel
+          open={contextOpen}
+          loading={!context.loaded}
+          projects={context.projects}
+          tasks={context.tasks}
+          documents={context.documents}
+          calendarConnected={context.calendarConnected}
+          onNavigate={navigate}
+          onOpenProject={(id) => navigate(`/projects/${id}/ai`)}
+          onClose={() => {
+            setContextOpen(false);
+            contextToggleRef.current?.focus();
+          }}
+        />
       </div>
 
-      <form
-        style={styles.composer}
-        onSubmit={(e) => {
-          e.preventDefault();
-          send();
-        }}
-      >
-        <input
-          style={styles.input}
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Type your message..."
-          disabled={loading}
-          aria-label="Message input"
-        />
+      {contextOpen && (
         <button
-          className="btn btn-primary"
-          style={styles.sendButton}
-          type="submit"
-          disabled={loading || !input.trim()}
-        >
-          {loading ? "Sending..." : "Send"}
-        </button>
-      </form>
+          type="button"
+          className="orbit-chat__scrim"
+          aria-label="Close context panel"
+          onClick={() => {
+            setContextOpen(false);
+            contextToggleRef.current?.focus();
+          }}
+        />
+      )}
     </div>
   );
 }

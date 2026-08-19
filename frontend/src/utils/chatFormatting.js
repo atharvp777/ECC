@@ -141,3 +141,171 @@ export function formatAssistantContent(content) {
 
   return text;
 }
+
+/* ============================================================================
+   ACTION CARDS (presentation only)
+   ----------------------------------------------------------------------------
+   A card is produced ONLY when the assistant's reply confidently matches a
+   known backend action/result pattern. Cards never execute mutations and never
+   fabricate ids — they only summarize what the assistant text already claims
+   and offer navigation/confirmation that reuse existing flows.
+   ========================================================================== */
+
+const DAY_PLAN_BLOCK_RE = /^\s*(\d{1,2}:\d{2})-(\d{1,2}:\d{2})\s+(.+?)(?:\s*\[(\d+)m\])?\s*$/gm;
+
+function extractDayPlanBlocks(text) {
+  const blocks = [];
+  let m;
+  DAY_PLAN_BLOCK_RE.lastIndex = 0;
+  while ((m = DAY_PLAN_BLOCK_RE.exec(text)) !== null) {
+    blocks.push({ start: m[1], end: m[2], title: m[3] });
+    if (blocks.length >= 12) break;
+  }
+  return blocks;
+}
+
+export function parseActionCard(content) {
+  const text = String(content ?? "").trim();
+  if (!text) return null;
+
+  let m;
+
+  m = text.match(/^Created task "(.+?)" and added it to your Google Calendar\.$/);
+  if (m) {
+    return {
+      kind: "task-created",
+      title: m[1],
+      meta: "Added to Google Calendar",
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+  m = text.match(/^Created task "(.+?)"(?: in project ID \d+)?\.$/);
+  if (m) {
+    return {
+      kind: "task-created",
+      title: m[1],
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+
+  m = text.match(/^Updated task "(.+?)" — estimate set to (\d+) minutes\.$/);
+  if (m) {
+    return {
+      kind: "task-updated",
+      title: m[1],
+      meta: `Estimate set to ${m[2]} minutes`,
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+  m = text.match(/^Updated task (\d+)\.$/);
+  if (m) {
+    return {
+      kind: "task-updated",
+      title: `Task ${m[1]}`,
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+
+  m = text.match(/^Marked task (\d+) as completed\.$/);
+  if (m) {
+    return {
+      kind: "task-completed",
+      title: `Task ${m[1]}`,
+      meta: "Completed",
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+
+  m = text.match(/^Deleted task (\d+)\.$/);
+  if (m) {
+    return {
+      kind: "task-deleted",
+      title: `Task ${m[1]}`,
+      nav: [{ label: "Open Tasks", to: "/tasks" }],
+    };
+  }
+
+  m = text.match(/^Created calendar event "(.+?)" starting at (.+?)\.$/);
+  if (m) {
+    return {
+      kind: "calendar-event-created",
+      title: m[1],
+      meta: `Starts ${m[2]}`,
+      nav: [{ label: "Show Calendar", to: "/calendar" }],
+    };
+  }
+
+  m = text.match(/^Created project "(.+?)"\.$/);
+  if (m) {
+    return {
+      kind: "project-created",
+      title: m[1],
+      nav: [{ label: "View Projects", to: "/projects" }],
+    };
+  }
+  m = text.match(/^Updated project "(.+?)"\.$/);
+  if (m) {
+    return {
+      kind: "project-updated",
+      title: m[1],
+      nav: [{ label: "View Projects", to: "/projects" }],
+    };
+  }
+
+  if (text.includes("Added these blocks to your Google Calendar:")) {
+    const blocks = extractDayPlanBlocks(text);
+    return {
+      kind: "day-plan-scheduled",
+      title: "Day plan scheduled",
+      meta:
+        blocks.length > 0
+          ? `${blocks.length} block${blocks.length === 1 ? "" : "s"} added to Google Calendar`
+          : "Added to Google Calendar",
+      blocks,
+      nav: [{ label: "Show Calendar", to: "/calendar" }],
+    };
+  }
+
+  if (/^Recommended schedule for \d{4}-\d{2}-\d{2}/.test(text)) {
+    const blocks = extractDayPlanBlocks(text);
+    return {
+      kind: "day-plan-ready",
+      title: "Day plan ready",
+      meta: "Recommended schedule — nothing scheduled yet",
+      blocks,
+      nav: [{ label: "Show Calendar", to: "/calendar" }],
+      confirm: "Schedule this plan",
+    };
+  }
+
+  return null;
+}
+
+/* ============================================================================
+   DOCUMENT / IMAGE CONTEXT INDICATORS
+   ----------------------------------------------------------------------------
+   Compact, honest chips derived ONLY from filenames that already appear in the
+   assistant's reply text. No previews, no re-sent bytes, no invented files.
+   ========================================================================== */
+
+const FILE_REF_RE = /([A-Za-z0-9][A-Za-z0-9 ._\-\u2019']*?\.(pdf|png|jpe?g|webp|gif|docx?|xlsx?|pptx?|txt|csv|md))\b/gi;
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
+
+export function extractContextIndicators(content) {
+  const text = String(content ?? "");
+  if (!text) return [];
+
+  const found = [];
+  const seen = new Set();
+  let m;
+  FILE_REF_RE.lastIndex = 0;
+  while ((m = FILE_REF_RE.exec(text)) !== null) {
+    const name = m[1].trim();
+    if (name.length < 3 || name.length > 120 || seen.has(name)) continue;
+    seen.add(name);
+    const ext = m[2].toLowerCase();
+    found.push({ name, kind: IMAGE_EXTENSIONS.has(ext) ? "image" : "document" });
+    if (found.length >= 6) break;
+  }
+  return found;
+}
