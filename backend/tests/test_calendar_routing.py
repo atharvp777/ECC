@@ -361,6 +361,55 @@ def test_chat_calendar_write_failure_is_honest(db_session, monkeypatch, tmp_path
     assert "network down" not in reply
 
 
+def test_chat_calendar_write_failure_is_logged(db_session, monkeypatch, tmp_path, caplog):
+    """A calendar write failure collapsed into the generic reply must be
+    preserved in the backend logs so the real error is never hidden."""
+    _write_token(monkeypatch, tmp_path, _WRITE_TOKEN)
+    planner_payload = {
+        "tool": "create_calendar_event",
+        "args": {"summary": "x", "when": "tomorrow", "timezone": "Asia/Kolkata"},
+    }
+    mock_service = MagicMock()
+    mock_service.events().insert().execute.side_effect = RuntimeError("network down")
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response(json.dumps(planner_payload))
+        mock_groq.return_value = mock_client
+
+        with patch.object(google_calendar, "_get_service", return_value=mock_service):
+            with caplog.at_level("WARNING", logger="app.services.ai_service"):
+                reply = chat_with_ai(
+                    [{"role": "user", "content": "add this to my calendar"}],
+                    db_session,
+                )
+
+    assert "No calendar event was created" in reply
+    assert "network down" in caplog.text
+    assert "Calendar write 'create_calendar_event' failed" in caplog.text
+
+
+def test_chat_calendar_write_request_without_tool_is_logged(db_session, caplog, monkeypatch):
+    """When a calendar write is requested but the planner produces no tool,
+    the backend logs it instead of failing silently."""
+    monkeypatch.setattr("app.services.ai_service.is_connected", lambda: True)
+    monkeypatch.setattr("app.services.google_calendar.has_write_scope", lambda: True)
+
+    with patch("app.services.ai_service.Groq") as mock_groq:
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _mock_groq_response("just a chat reply")
+        mock_groq.return_value = mock_client
+
+        with caplog.at_level("WARNING", logger="app.services.ai_service"):
+            reply = chat_with_ai(
+                [{"role": "user", "content": "set a reminder for 29th august for x"}],
+                db_session,
+            )
+
+    assert "No calendar event was created" in reply
+    assert "no write tool was produced" in caplog.text
+
+
 # ----------------------------------------------------------------------
 # 5. Missing write scope (calendar.readonly token)
 # ----------------------------------------------------------------------

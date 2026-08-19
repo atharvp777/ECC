@@ -136,7 +136,13 @@ def _calendar_operation_failure_message(tool_name: str) -> str:
 
 
 def _calendar_write_failure_message(error_text: str, tool_name: str = "") -> str:
-    """Turn a failed calendar write into an honest, user-readable message."""
+    """Turn a failed calendar write into an honest, user-readable message.
+
+    The raw provider/dispatcher error is always preserved in the backend logs
+    so a collapsed generic reply never hides the real failure. Logged error
+    text may contain Google API error details but never credentials.
+    """
+    logger.warning("Calendar write '%s' failed: %s", tool_name or "(?)", error_text)
     lower = error_text.lower()
     if any(hint in lower for hint in _WRITE_ACCESS_ERROR_HINTS):
         return error_text
@@ -2031,6 +2037,11 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
 
             if data is None:
                 if calendar_write_requested and tool_name in CALENDAR_WRITE_TOOLS:
+                    logger.warning(
+                        "Calendar write tool '%s' returned no result; no mutation "
+                        "performed.",
+                        tool_name,
+                    )
                     return _calendar_operation_failure_message(tool_name)
                 return f"Tool '{tool_name}' failed: no result was returned."
 
@@ -2164,6 +2175,11 @@ def chat_with_ai(messages: List[dict], db: Session) -> str:
             return _CALENDAR_NOT_REMOVED_MESSAGE
         if op == "reschedule":
             return _CALENDAR_NOT_UPDATED_MESSAGE
+        logger.warning(
+            "Calendar write requested but no write tool was produced; "
+            "nothing was written. user_message=%r",
+            last_user,
+        )
         return _CALENDAR_NOT_CREATED_MESSAGE
 
 # ---- 5️⃣ No tool request – fall back to LLM ----------------------------
