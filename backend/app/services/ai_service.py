@@ -1,4 +1,6 @@
 import logging
+import re
+
 import groq
 from groq import Groq
 from pathlib import Path
@@ -2346,6 +2348,306 @@ def _handle_reference_turn(
     return proposal["reply"]
 
 
+# ----------------------------------------------------------------------
+# Deterministic bulk task creation (never the LLM, never the planner)
+# ----------------------------------------------------------------------
+# Explicit request phrases that mean "turn this provided list into individual
+# tasks". Matching is deliberately strict: only clear task-creation verbs with a
+# task-list reference. Ordinary statements or questions containing a list are
+# never intercepted (the handler also requires a parseable list to exist).
+_BULK_TASK_INTENT_RE = re.compile(
+    r"\b("
+    r"make these topics as individual tasks"
+    r"|make these topics into tasks"
+    r"|make these as (?:individual|separate) tasks"
+    r"|make this into tasks"
+    r"|make them into tasks"
+    r"|make these into tasks"
+    r"|make (?:individual|separate) tasks"
+    r"|make a task for each"
+    r"|make tasks for each"
+    r"|make one task per"
+    r"|make each (?:topic|item|one) (?:into )?a task"
+    r"|create (?:individual|separate) tasks"
+    r"|create a task for each"
+    r"|create tasks for each"
+    r"|create one task per"
+    r"|create each (?:topic|item|one) (?:into )?a task"
+    r"|create tasks from (?:these|this|them|the list|this list)"
+    r"|create tasks for (?:these|this|them|the list|this list)"
+    r"|add these as (?:individual|separate )?tasks"
+    r"|add them as (?:individual|separate )?tasks"
+    r"|add these topics as (?:individual|separate )?tasks"
+    r"|add the following tasks"
+    r"|add following tasks"
+    r"|add the following as tasks"
+    r"|add each (?:topic|item|one) as a (?:separate )?task"
+    r"|turn these into tasks"
+    r"|turn this into tasks"
+    r"|turn them into tasks"
+    r"|turn each (?:topic|item|one) into (?:a )?task"
+    r"|split (?:these|this|them) into tasks"
+    r"|break (?:these|this|them) into tasks"
+    r"|convert (?:these|this|them) into tasks"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# "in the X project" (name before the word project) and "the project X"
+# (name after it). Only ever used to RESOLVE a project by name through the
+# existing trusted resolution; a numeric project_id in the message is never
+# accepted as a project selector.
+_PROJECT_NAME_BEFORE_RE = re.compile(
+    r"\b(?:in|to|for|on|into|under)\s+the\s+(?P<name>[A-Za-z0-9][^\"'\n:]{0,80}?)\s+project\b",
+    re.IGNORECASE,
+)
+_PROJECT_NAME_AFTER_RE = re.compile(
+    r"\b(?:in|to|for|on|into|under)\s+the\s+project\s+(?P<name>[^\"'\n]{1,80}?)\s*[:,\n]",
+    re.IGNORECASE,
+)
+
+# "by saying study before them", "with the prefix Study", "prefixed with Study".
+_BULK_PREFIX_PHRASE_RE = re.compile(
+    r"\b(?:by )?saying\s+(?P<prefix>[A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)?)\s+before\s+(?:them|each|every|it)\b"
+    r"|\bwith\s+the\s+prefix\s+(?P<with_prefix>[\w]+)"
+    r"|\bprefixed\s+with\s+(?P<prefixed>[\w]+)"
+    r"|\bprefix\s+(?P<bare_prefix>[\w]+)",
+    re.IGNORECASE,
+)
+
+# Quoted illustrative examples ("like 'Study Role of a Data Scientist'") must
+# never be parsed as list items.
+_BULK_LIKE_EXAMPLE_RE = re.compile(
+    r"\blike\s+[\"'][^\"'\n]+[\"']|\bfor example\b\s*:?\s*(?:[\"'][^\"'\n]+[\"'])?",
+    re.IGNORECASE,
+)
+
+_BULK_NEGATION_RE = re.compile(r"\b(don'?t|do not|dont|never)\b", re.IGNORECASE)
+
+_LEADING_CONNECTOR_RE = re.compile(r"^[\s:.,\-–—•*_+]+")
+_BULK_HEADER_RE = re.compile(
+    r"^(?:(?:the|these|following|below|given|here|list of|all of)\s+)?"
+    r"(?:topics?|items?|list|following)\s*(?:are|is|to create|to add)?\s*[:]\s*",
+    re.IGNORECASE,
+)
+_BULK_LINE_RE = re.compile(r"^[\s\-–—•*_+]+\s*")
+_BULK_NUMBERED_RE = re.compile(r"^\d+[.)]\s*")
+
+
+def _is_bulk_task_intent(text: str) -> bool:
+    """True for an explicit bulk task-creation request.
+
+    A question or a negated instruction is never treated as a request to create
+    tasks. This guard is shared by the deterministic handler (which additionally
+    requires a parseable list) and the fallback safety net in ``chat_with_ai``.
+    """
+    if not text:
+        return False
+    if "?" in text:
+        return False
+    if _BULK_NEGATION_RE.search(text):
+        return False
+    return bool(_BULK_TASK_INTENT_RE.search(text))
+
+
+def _split_bulk_topics(rest: str) -> List[str]:
+    """Split the list region into individual topics, deterministically.
+
+    Newlines are the primary separator (each line is one topic, so a topic that
+    itself contains commas or a colon is preserved). A single-line list falls
+    back to comma separation, matching "add the following tasks: A, B, C".
+    """
+    if not rest:
+        return []
+    lines = []
+    for raw in rest.splitlines():
+        line = _BULK_LINE_RE.sub("", raw)
+        line = _BULK_NUMBERED_RE.sub("", line)
+        line = line.strip().strip("\"'")
+        line = line.rstrip(":").strip()
+        if line:
+            lines.append(line)
+    if len(lines) >= 2:
+        return lines
+    if len(lines) == 1:
+        parts = [p.strip().strip("\"'").rstrip(":").strip() for p in lines[0].split(",")]
+        return [p for p in parts if p]
+    return []
+
+
+def _parse_bulk_task_request(text: str) -> Optional[dict]:
+    """Deterministically parse an explicit bulk task-creation request.
+
+    Returns ``{"topics": [...], "prefix": str|None, "project_name": str|None}``
+    when the message BOTH clearly requests bulk task creation AND carries a
+    parseable list; ``None`` otherwise, so ordinary statements/questions fall
+    through to the normal planner/LLM path.
+    """
+    if not _is_bulk_task_intent(text):
+        return None
+    intent = _BULK_TASK_INTENT_RE.search(text)
+    # The instruction scaffolding (intent/project/prefix/example) lives on the
+    # same line as the intent phrase. Anything past the first newline is the
+    # list region, so a topic like "in the machine learning project" can never
+    # be mistaken for the project selector.
+    line_end = text.find("\n", intent.start())
+    if line_end == -1:
+        line_end = len(text)
+
+    ends = [intent.end()]
+    project_name = None
+    before = _PROJECT_NAME_BEFORE_RE.search(text)
+    if before is not None and before.start() < line_end:
+        ends.append(before.end())
+        project_name = before.group("name").strip()
+    after = _PROJECT_NAME_AFTER_RE.search(text)
+    if after is not None and after.start() < line_end:
+        ends.append(after.end())
+        if project_name is None:
+            project_name = after.group("name").strip()
+
+    prefix_match = _BULK_PREFIX_PHRASE_RE.search(text)
+    if prefix_match is not None and prefix_match.start() < line_end:
+        ends.append(prefix_match.end())
+    example = _BULK_LIKE_EXAMPLE_RE.search(text)
+    if example is not None and example.start() < line_end:
+        ends.append(example.end())
+
+    rest = text[max(ends):]
+    rest = _LEADING_CONNECTOR_RE.sub(" ", rest)
+    rest = _BULK_HEADER_RE.sub(" ", rest, count=1)
+    rest = rest.strip()
+
+    prefix = None
+    if prefix_match is not None:
+        prefix = next(
+            (prefix_match.group(g) for g in
+             ("prefix", "with_prefix", "prefixed", "bare_prefix")
+             if prefix_match.group(g)),
+            None,
+        )
+        if prefix:
+            prefix = prefix.strip().strip("\"'")
+
+    return {
+        "topics": _split_bulk_topics(rest),
+        "prefix": prefix,
+        "project_name": project_name,
+    }
+
+
+def _apply_task_prefix(topic: str, prefix: Optional[str]) -> str:
+    """Prefix a topic exactly as requested ("saying study before them").
+
+    The prefix is title-cased ("study" -> "Study"), matching the requested
+    titles such as "Study Introduction to Data Science: Definition".
+    """
+    if not prefix:
+        return topic
+    p = prefix.strip()
+    if p:
+        p = p[0].upper() + p[1:]
+    if topic.lower().startswith(p.lower()):
+        return topic
+    return f"{p} {topic}"
+
+
+def _render_bulk_task_result(successes: list, failures: list, total: int) -> str:
+    """Honest bulk-creation report: only actually-created tasks are listed."""
+    created = len(successes)
+    lines = [f"Created {created} of {total} tasks."]
+    if created == 0:
+        lines = [
+            "I couldn't create any tasks.",
+            f"Created {created} of {total} tasks.",
+        ]
+    if successes:
+        lines.append("Created:")
+        lines.extend(f'- "{t.title}"' for t in successes)
+    if failures:
+        lines.append("Couldn't create:")
+        lines.extend(f'- "{f["topic"]}": {f["error"]}' for f in failures)
+    return "\n".join(lines)
+
+
+def _handle_bulk_task_request(
+    last_user: str, db: Session, project_id: Optional[int]
+) -> Optional[str]:
+    """Deterministically create one task per user-supplied topic.
+
+    Runs BEFORE the planner: it never depends on the LLM to find or rewrite the
+    list, never trusts a message-supplied project_id, and never lets the
+    free-form fallback claim success for a request it didn't act on. Every task
+    is created through the EXISTING ``create_task`` execution path
+    (``execute_tool("create_task", ...)``), so authorization, project-scoping
+    and persistence are exactly the same as any other task creation.
+
+    Returns a reply to return directly, or None to fall through to the normal
+    planner/LLM path.
+    """
+    parsed = _parse_bulk_task_request(last_user)
+    if parsed is None:
+        return None
+    topics = parsed["topics"]
+    prefix = parsed["prefix"]
+    named_project = parsed["project_name"]
+
+    # Trusted project resolution: the explicit project-scoped AI workspace id is
+    # authoritative (application context, like the reference resolver). Without
+    # one, a project NAMED IN THE USER'S MESSAGE is resolved through the same
+    # trusted resolution create_task uses (tool_dispatcher._resolve_project_name).
+    # A numeric project_id anywhere in the message is never accepted.
+    trusted_project_id = project_id
+    if trusted_project_id is None and named_project:
+        from app.services.tool_dispatcher import _resolve_project_name
+
+        resolved, err = _resolve_project_name(db, named_project)
+        if err is not None:
+            return (
+                f"I couldn't create those tasks: {err.get('error', 'project not found')} "
+                "No tasks were created."
+            )
+        trusted_project_id = resolved
+
+    if not topics:
+        return (
+            "I couldn't find a list of topics in your message to create tasks "
+            "from. Share the topics and I'll create one task per topic."
+        )
+
+    successes: list = []
+    failures: list = []
+    for topic in topics:
+        title = _apply_task_prefix(topic, prefix)
+        args = {"title": title}
+        if trusted_project_id is not None:
+            args["project_id"] = trusted_project_id
+        try:
+            result = execute_tool(
+                "create_task",
+                args,
+                db,
+                user_message=None,
+                last_assistant_reply=None,
+                explicit_authorization=False,
+                trusted_project_id=None,
+            )
+        except Exception as exc:
+            logger.warning("Bulk task create failed for %r: %s", title, exc)
+            failures.append({"topic": topic, "error": str(exc)})
+            continue
+        data = result.get("data")
+        if isinstance(data, dict) and data.get("error"):
+            failures.append({"topic": topic, "error": data["error"]})
+            continue
+        if data is None:
+            failures.append({"topic": topic, "error": "no result was returned"})
+            continue
+        successes.append(data)
+
+    return _render_bulk_task_result(successes, failures, len(topics))
+
+
 def chat_with_ai(
     messages: List[dict], db: Session, project_id: Optional[int] = None
 ) -> str:
@@ -2407,6 +2709,16 @@ def chat_with_ai(
             tool_call = correction_tool_call
             planned_tool_call = True
             correction_reroute = True
+
+    if tool_call is None:
+        # An explicit bulk task-creation request ("make these topics as
+        # individual tasks in the X project ...") is handled deterministically,
+        # BEFORE the planner: one create_task per user-supplied topic through the
+        # existing execution path. Returns None when the message is not a bulk
+        # request.
+        bulk_task_reply = _handle_bulk_task_request(last_user, db, project_id)
+        if bulk_task_reply is not None:
+            return bulk_task_reply
 
     if tool_call is None:
         # A deictic reference turn ("set those dates on my calendar") is
@@ -2782,6 +3094,16 @@ def chat_with_ai(
         return _CALENDAR_NOT_CREATED_MESSAGE
 
 # ---- 5️⃣ No tool request – fall back to LLM ----------------------------
+    # Safety net: the deterministic bulk handler above always intercepts an
+    # explicit bulk task-creation request and returns an honest reply. If one
+    # still reaches the fallback (defensive), never let the free-form LLM claim
+    # "I successfully added tasks" when nothing was dispatched.
+    if _is_bulk_task_intent(last_user):
+        return (
+            "I couldn't create those tasks. Share the list of topics and I'll "
+            "create one task per topic."
+        )
+
     if not ai_provider_configured():
         logger.error("AI provider is not configured – AI chat unavailable")
         return ai_provider_configured_message()
