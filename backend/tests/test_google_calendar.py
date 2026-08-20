@@ -7,6 +7,7 @@ listing with its timezone/all-day/defensive filtering.
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine
@@ -195,19 +196,20 @@ def test_get_upcoming_events_returns_empty_when_disconnected():
 
 
 def test_get_upcoming_events_lists_with_all_day_flag():
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
     items = [
         {
             "id": "a1",
             "summary": "Timed event",
-            "start": {"dateTime": "2026-08-20T10:00:00+05:30"},
-            "end": {"dateTime": "2026-08-20T11:00:00+05:30"},
+            "start": {"dateTime": today.strftime("%Y-%m-%d") + "T10:00:00+05:30"},
+            "end": {"dateTime": today.strftime("%Y-%m-%d") + "T11:00:00+05:30"},
             "htmlLink": "http://link",
         },
         {
             "id": "a2",
             "summary": "All-day event",
-            "start": {"date": "2026-08-21"},
-            "end": {"date": "2026-08-22"},
+            "start": {"date": today.isoformat()},
+            "end": {"date": (today + timedelta(days=1)).isoformat()},
         },
     ]
     with patch.object(google_calendar, "_load_credentials", return_value=_mock_credentials()), \
