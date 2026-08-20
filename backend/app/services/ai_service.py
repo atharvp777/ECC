@@ -2215,6 +2215,137 @@ def _synthesize_day_plan(day_plan, user_message: str) -> str:
         logger.warning("Day plan presentation failed; using deterministic summary: %s", exc)
     return _render_day_plan_text(day_plan)
 
+def _register_reply_referents(
+    reply: str, db: Session, project_id: Optional[int], events: Optional[list] = None
+) -> None:
+    """Record structured referents behind a reply the user just saw.
+
+    Only authoritative backend data is ever registered: the live calendar read
+    result (``events``) and dates from the project's saved ``project_context``
+    rows that the reply actually surfaced. Free-form LLM text is never a
+    referent source.
+    """
+    from app.services import reference_resolution as _rr
+
+    referents: list[dict] = []
+    if events:
+        referents.extend(_rr.referents_from_calendar_events(events, project_id))
+    if project_id is not None:
+        referents.extend(_rr.referents_from_project_context(db, project_id, reply))
+    if referents:
+        _rr.register_structured_referents(reply, referents, project_id)
+
+
+def _execute_reference_calendar_writes(
+    db: Session, referents: list[dict], project_id: Optional[int]
+) -> str:
+    """Execute confirmed reference-based calendar writes via the existing path.
+
+    Every referent is created by calling ``execute_tool("create_calendar_event")``
+    — the same server-side write path as any other calendar event, with the same
+    authorization and idempotency semantics. Success is only claimed for writes
+    that returned a real Google event id; a partial failure is reported honestly
+    and never disguised as full success.
+    """
+    from app.services.tools import build_calendar_event_body
+
+    successes: list[dict] = []
+    failures: list[dict] = []
+    for ref in referents:
+        label = (
+            (ref.get("label") or "").strip()
+            or (ref.get("date_text") or ref.get("date") or "event")
+        )
+        if ref.get("type") != "context_date" or not ref.get("date"):
+            failures.append({"label": label, "error": "cannot schedule this referent"})
+            continue
+        body = build_calendar_event_body(
+            {
+                "when": ref["date"],
+                "summary": label,
+                "duration_minutes": 60,
+                "timezone": SYSTEM_TIMEZONE,
+            }
+        )
+        try:
+            result = execute_tool(
+                "create_calendar_event",
+                {"event_data": body},
+                db,
+                user_message=None,
+                last_assistant_reply=None,
+                explicit_authorization=True,
+                trusted_project_id=None,
+            )
+        except Exception as exc:
+            logger.warning("Reference calendar write failed for %r: %s", label, exc)
+            failures.append({"label": label, "error": str(exc)})
+            continue
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict) and data.get("error"):
+            failures.append({"label": label, "error": data["error"]})
+            continue
+        if not (isinstance(data, dict) and data.get("id")):
+            failures.append({"label": label, "error": "no event id returned"})
+            continue
+        _record_recent_calendar_event(data["id"], data.get("summary"), data.get("start"))
+        successes.append(data)
+
+    if not successes and not failures:
+        return "I didn't find any dates to add to your Google Calendar."
+    return _render_reference_write_result(successes, failures)
+
+
+def _render_reference_write_result(successes: list[dict], failures: list[dict]) -> str:
+    """Honest report of the confirmed reference write: real event ids only."""
+    lines: list[str] = []
+    if successes:
+        noun = "event" if len(successes) == 1 else "events"
+        lines.append(f"Added {len(successes)} {noun} to your Google Calendar:")
+        for event in successes:
+            start = (event.get("start") or {}).get("dateTime") or (event.get("start") or {}).get("date") or ""
+            lines.append(f"- {event.get('summary') or '(no title)'} starting at {start}")
+    if failures:
+        noun = "event" if len(failures) == 1 else "events"
+        lines.append(f"Couldn't add {len(failures)} {noun}:")
+        for failure in failures:
+            lines.append(f"- {failure['label']}: {failure['error']}")
+    if not successes:
+        return "I couldn't add those dates to Google Calendar.\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+
+def _handle_reference_turn(
+    last_user: str,
+    last_assistant_reply: Optional[str],
+    project_id: Optional[int],
+    db: Session,
+) -> Optional[str]:
+    """Handle a deictic reference turn ("set those dates on my calendar").
+
+    Returns a reply string to return directly (a proposal, a clarification, or
+    the confirmed write result), or None to fall through to the normal
+    planner/LLM path. Deterministic only — never calls the model to resolve a
+    reference and never parses dates out of the user's new message.
+    """
+    from app.services import reference_resolution as _rr
+
+    confirmation = _rr.resolve_confirmation(last_user, last_assistant_reply, project_id)
+    if confirmation is not None:
+        if confirmation["kind"] == "execute":
+            return _execute_reference_calendar_writes(
+                db, confirmation["referents"], project_id
+            )
+        # "not_pending": keep processing below.
+
+    proposal = _rr.propose_reference_calendar(
+        last_user, last_assistant_reply, project_id
+    )
+    if proposal is None:
+        return None
+    return proposal["reply"]
+
+
 def chat_with_ai(
     messages: List[dict], db: Session, project_id: Optional[int] = None
 ) -> str:
@@ -2257,6 +2388,10 @@ def chat_with_ai(
         (m["content"] for m in reversed(messages) if m["role"] == "user"),
         "",
     )
+    last_assistant_reply = next(
+        (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
+        None,
+    )
     calendar_write_requested = _is_calendar_write_request(last_user)
     tool_call = extract_tool_call(last_user)
     planned_tool_call = False
@@ -2274,6 +2409,16 @@ def chat_with_ai(
             correction_reroute = True
 
     if tool_call is None:
+        # A deictic reference turn ("set those dates on my calendar") is
+        # resolved deterministically against the reference registry, BEFORE the
+        # planner: it must never become a brand-new create_calendar_event call
+        # with fabricated args, and never a plain LLM answer. Returns None when
+        # the message is not a reference turn.
+        reference_reply = _handle_reference_turn(
+            last_user, last_assistant_reply, project_id, db
+        )
+        if reference_reply is not None:
+            return reference_reply
         tool_call = plan_tool_call(
             last_user,
             context,
@@ -2369,10 +2514,6 @@ def chat_with_ai(
 
         # ---- 3️⃣ Execute the tool -------------------------------------------
         try:
-            last_assistant_reply = next(
-                (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
-                None,
-            )
             # Trusted project id for save_project_context: the authoritative
             # project comes from APPLICATION context — the explicit project-scoped
             # AI workspace id when present, otherwise a deterministic conversation
@@ -2482,9 +2623,11 @@ def chat_with_ai(
             # below — the model is never asked to reinterpret a plain list.
             if tool_name == "list_calendar_events" and isinstance(data, list):
                 if project_context_block:
-                    return _synthesize_calendar_read(
+                    reply = _synthesize_calendar_read(
                         data, last_user, context, project_context_block
                     )
+                    _register_reply_referents(reply, db, project_id, events=data)
+                    return reply
                 # A date-filtered read without project context still names the
                 # day so the reply is unambiguous.
                 list_date_label = None
@@ -2585,7 +2728,12 @@ def chat_with_ai(
 
             render = reply_map.get(tool_name)
             if render:
-                return render()
+                reply = render()
+                if tool_name == "list_calendar_events" and isinstance(data, list):
+                    _register_reply_referents(reply, db, project_id, events=data)
+                elif project_id is not None:
+                    _register_reply_referents(reply, db, project_id)
+                return reply
 
             # Fallback for any tool without a dedicated renderer. This is not
             # a fake success: error results were already handled above.
@@ -2648,6 +2796,7 @@ def chat_with_ai(
             )
             if not content or not isinstance(content, str):
                 raise ValueError("AI returned an empty or malformed response")
+            _register_reply_referents(content, db, project_id)
             return content
 
         doc_context = _project_document_context(db, messages, project_id)
@@ -2659,6 +2808,7 @@ def chat_with_ai(
         )
         if not content or not isinstance(content, str):
             raise ValueError("AI returned an empty or malformed response")
+        _register_reply_referents(content, db, project_id)
         return content
     except Exception as exc:
         logger.exception("AI chat completion failed")
