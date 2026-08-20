@@ -10,7 +10,7 @@ OAuth2 flow:
 import json
 import secrets
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, time, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -197,14 +197,42 @@ def _load_credentials():
     return creds
 
 
-def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
-    """Fetch calendar events from the start of today (Asia/Kolkata).
+def _event_local_date(start: str, tz: ZoneInfo) -> Optional[date]:
+    """The event's local calendar day in ``tz``, or None when unparseable.
 
-    The listing window begins at 00:00 of the current LOCAL day (UTC+05:30) so
-    an event created earlier today — e.g. "put X on my calendar" scheduled for
-    today at 09:00 — does not disappear from the Orbit calendar list merely
-    because its start time has passed. The future window extends ``days`` days
-    from now. Events that ended before today are dropped defensively.
+    Timed events are converted from their offset time to the local day; all-day
+    events carry a date-only start which is already the local calendar day.
+    """
+    if not start:
+        return None
+    if "T" in start:
+        try:
+            return datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(tz).date()
+        except (ValueError, TypeError):
+            return None
+    try:
+        return date.fromisoformat(start)
+    except (ValueError, TypeError):
+        return None
+
+
+def get_upcoming_events(
+    days: int = 14,
+    max_results: int = 20,
+    date: Optional[date] = None,
+) -> List[dict]:
+    """Fetch calendar events.
+
+    Without ``date`` the window begins at 00:00 of the current LOCAL day
+    (UTC+05:30) so an event created earlier today — e.g. "put X on my calendar"
+    scheduled for today at 09:00 — does not disappear from the Orbit calendar
+    list merely because its start time has passed. The future window extends
+    ``days`` days from now. Events that ended before today are dropped
+    defensively.
+
+    With ``date`` the window is exactly that one local day (00:00–24:00
+    Asia/Kolkata) and every returned event is additionally filtered to that
+    local date — the server, not the model, is authoritative for the filter.
     """
     creds = _load_credentials()
     if not creds:
@@ -212,14 +240,21 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
 
     tz = ZoneInfo("Asia/Kolkata")
     now = datetime.now(tz)
-    start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    time_max = now + timedelta(days=days)
+
+    if date is not None:
+        start_of_window = datetime.combine(date, time.min, tzinfo=tz)
+        time_min = start_of_window
+        time_max = start_of_window + timedelta(days=1)
+    else:
+        start_of_window = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        time_min = start_of_window
+        time_max = now + timedelta(days=days)
 
     service = build("calendar", "v3", credentials=creds)
 
     result = service.events().list(
         calendarId="primary",
-        timeMin=start_of_today.isoformat(),
+        timeMin=time_min.isoformat(),
         timeMax=time_max.isoformat(),
         maxResults=max_results,
         singleEvents=True,
@@ -230,13 +265,18 @@ def get_upcoming_events(days: int = 14, max_results: int = 20) -> List[dict]:
     for e in result.get("items", []):
         start = e["start"].get("dateTime", e["start"].get("date", ""))
         end = e["end"].get("dateTime", e["end"].get("date", ""))
-        # Defensive: never surface an event that ended before today began.
-        if end and "T" in end:
-            try:
-                if datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(tz) <= start_of_today:
-                    continue
-            except (ValueError, TypeError):
-                pass
+        if date is not None:
+            # Authoritative local-date filter: only events ON the requested day.
+            if _event_local_date(start, tz) != date:
+                continue
+        else:
+            # Defensive: never surface an event that ended before today began.
+            if end and "T" in end:
+                try:
+                    if datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(tz) <= start_of_window:
+                        continue
+                except (ValueError, TypeError):
+                    pass
         events.append({
             "id":          e.get("id"),
             "title":       e.get("summary", "(no title)"),

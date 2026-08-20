@@ -740,7 +740,7 @@ def test_planner_selects_apply_day_plan_on_explicit_confirmation():
 def test_chat_explicit_schedule_flow_authorized(db_session, plan_env):
     task = _task(db_session, "PCB schematic", estimated_minutes=90)
 
-    def fake_planner(msg, ctx, history=None):
+    def fake_planner(msg, ctx, history=None, project_context=""):
         if "Plan my day" in msg:
             return {"tool": "plan_my_day", "args": {}}
         if "Schedule it" in msg:
@@ -787,7 +787,7 @@ def test_chat_backend_rejects_planner_misroute_for_recommendation(db_session, pl
 def test_chat_follow_up_safety_only_final_turn_writes(db_session, plan_env):
     task = _task(db_session, "PCB schematic", estimated_minutes=90)
 
-    def fake_planner(msg, ctx, history=None):
+    def fake_planner(msg, ctx, history=None, project_context=""):
         if "Plan my day" in msg:
             return {"tool": "plan_my_day", "args": {}}
         if "Schedule it" in msg:

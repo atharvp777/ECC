@@ -108,7 +108,10 @@ class DeleteTaskRequest(BaseModel):
 
 
 class ListCalendarEventsRequest(BaseModel):
-    pass
+    # The user's VERBATIM date phrase ("August 29", "tomorrow", "2026-08-29")
+    # when they ask about a specific day. Resolved to a concrete local day
+    # server-side; None means the full upcoming window.
+    date: Optional[str] = None
 
 
 class CreateCalendarEventRequest(BaseModel):
@@ -322,6 +325,31 @@ def _resolve_event_date(when: str, now: datetime) -> date:
             return now.date() + timedelta(days=days_ahead)
 
     return now.date()
+
+
+def resolve_calendar_read_date(when: str, now: datetime) -> Optional[date]:
+    """Resolve the user's verbatim date phrase to one specific local day for a
+    calendar READ, or None when the phrase names no date.
+
+    Unlike event CREATION (which defaults an unanchored phrase to today), a
+    read NEVER infers a date: an unanchored phrase yields None so the caller
+    answers honestly instead of silently filtering the calendar to today. This
+    also stops a spurious planner-supplied date from inventing a window.
+    """
+    text = (when or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    anchored = (
+        re.search(r"\d{4}-\d{1,2}-\d{1,2}", text) is not None
+        or "today" in lowered
+        or "tomorrow" in lowered
+        or any(name in lowered for name in _WEEKDAYS)
+        or _resolve_month_day(lowered, now.date()) is not None
+    )
+    if not anchored:
+        return None
+    return _resolve_event_date(text, now)
 
 
 def _resolve_event_datetime(args: Dict[str, Any], now: datetime) -> datetime:
@@ -1153,7 +1181,28 @@ def delete_task(db: Session, req: DeleteTaskRequest) -> Dict[str, Any]:
 
 
 def list_calendar_events(db: Session, req: ListCalendarEventsRequest) -> Dict[str, Any]:
-    events = gc_get_upcoming_events(days=7, max_results=20)
+    """Read-only calendar listing.
+
+    Without a date this returns the upcoming 7-day window (unchanged behavior).
+    With a date the user's verbatim phrase is resolved server-side to one local
+    day and only that day's events are returned — never the unfiltered list.
+    An unresolvable date is an honest error, never a silent "today" guess.
+    """
+    if req.date is None:
+        events = gc_get_upcoming_events(days=7, max_results=20)
+        return {"data": events}
+
+    resolved = resolve_calendar_read_date(req.date, datetime.now(ZoneInfo(SYSTEM_TIMEZONE)))
+    if resolved is None:
+        return {
+            "data": {
+                "error": (
+                    f"I couldn't understand the date '{req.date}' for a calendar "
+                    "read. Tell me a specific date, e.g. 'August 29' or 'tomorrow'."
+                )
+            }
+        }
+    events = gc_get_upcoming_events(date=resolved, max_results=50)
     return {"data": events}
 
 

@@ -422,7 +422,7 @@ def test_chat_estimation_confirmation_flow_saves_estimate(db_session):
     with patch.object(
         ai_service,
         "plan_tool_call",
-        side_effect=lambda msg, ctx, history=None: calls.get(msg),
+        side_effect=lambda msg, ctx, history=None, project_context="": calls.get(msg),
     ), patch.object(
         effort_estimation,
         "complete_text",
