@@ -84,6 +84,7 @@ function renderChat(route = "/chat") {
         <Route path="/tasks" element={<div>TASKS PAGE</div>} />
         <Route path="/projects" element={<div>PROJECTS PAGE</div>} />
         <Route path="/projects/:id/ai" element={<div>PROJECT AI PAGE</div>} />
+        <Route path="/projects/:id/context" element={<div>PROJECT CONTEXT PAGE</div>} />
       </Routes>
     </MemoryRouter>
   );
@@ -452,5 +453,56 @@ describe("Chat — Orbit AI workspace", () => {
     expect(screen.getByRole("button", { name: "Clear Chat" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText("2 open tasks")).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText("AI online")).toBeInTheDocument());
+  });
+});
+
+describe("Chat — project context cards", () => {
+  it("renders a context-saved card and navigates to the project's Context tab", async () => {
+    mockFetch({
+      reply:
+        'Saved to "In-SEM" project context (project 3):\nSelected electives are Data Mining and Cloud Computing.',
+    });
+    renderChat();
+    await sendMessage("remember my electives");
+    const card = await screen.findByRole("group", { name: "Saved to project context" });
+    expect(within(card).getByText("Selected electives are Data Mining and Cloud Computing.")).toBeInTheDocument();
+    expect(within(card).getByText("Saved to In-SEM project context")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "View project context" }));
+    expect(await screen.findByText("PROJECT CONTEXT PAGE")).toBeInTheDocument();
+  });
+
+  it("confirms a context-suggest card by sending an explicit remember message", async () => {
+    mockFetch({
+      reply:
+        "You could save that as project context.\n[SAVE_CONTEXT]In-SEM: The deadline moved to Friday[/SAVE_CONTEXT]",
+    });
+    renderChat();
+    await sendMessage("the deadline moved to Friday");
+    const card = await screen.findByRole("group", { name: "Orbit suggests saving" });
+    expect(within(card).getByText("The deadline moved to Friday")).toBeInTheDocument();
+
+    mockFetch({ reply: 'Saved to "In-SEM" project context (project 3):\nThe deadline moved to Friday.' });
+    await userEvent.click(screen.getByRole("button", { name: "Save to project context" }));
+    expect(await screen.findByRole("group", { name: "Saved to project context" })).toBeInTheDocument();
+    const last = fetchPostCalls().pop();
+    const body = JSON.parse(last[1].body);
+    expect(body.messages).toContainEqual({
+      role: "user",
+      content: "Remember that The deadline moved to Friday for the In-SEM project.",
+    });
+  });
+
+  it("dismisses a context-suggest card without sending anything", async () => {
+    mockFetch({
+      reply:
+        "You could save that as project context.\n[SAVE_CONTEXT]In-SEM: The deadline moved to Friday[/SAVE_CONTEXT]",
+    });
+    renderChat();
+    await sendMessage("the deadline moved to Friday");
+    const card = await screen.findByRole("group", { name: "Orbit suggests saving" });
+    const callsBefore = fetchPostCalls().length;
+    await userEvent.click(within(card).getByRole("button", { name: "Don't save" }));
+    expect(screen.queryByRole("group", { name: "Orbit suggests saving" })).not.toBeInTheDocument();
+    expect(fetchPostCalls()).toHaveLength(callsBefore);
   });
 });

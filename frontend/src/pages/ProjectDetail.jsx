@@ -5,6 +5,7 @@ import {
   updateTask, deleteTask,
   getDocuments, uploadDocument, deleteDocument,
   getNotes, createNote, updateNote, deleteNote,
+  getProjectContext, createProjectContext, updateProjectContext, deleteProjectContext,
 } from "../api";
 import { ArrowLeft, Pencil, Plus, Sparkles, Trash2, FolderKanban } from "lucide-react";
 import OrbitButton from "../components/ui/OrbitButton";
@@ -16,6 +17,7 @@ import ProjectOverview from "../components/ProjectOverview";
 import ProjectTasks from "../components/ProjectTasks";
 import ProjectDocuments from "../components/ProjectDocuments";
 import ProjectNotes from "../components/ProjectNotes";
+import ProjectContext from "../components/ProjectContext";
 import ProjectAi from "../components/ProjectAi";
 import ProjectDrawer from "../components/ProjectDrawer";
 import TaskDrawer from "../components/TaskDrawer";
@@ -25,7 +27,13 @@ import {
   formatProjectDeadline,
 } from "../utils/projects";
 
-const TAB_BY_PATH = { tasks: "tasks", documents: "documents", notes: "notes", ai: "ai" };
+const TAB_BY_PATH = {
+  tasks: "tasks",
+  documents: "documents",
+  notes: "notes",
+  context: "context",
+  ai: "ai",
+};
 
 function activeTabOf(pathname, id) {
   const rest = pathname.slice(`/projects/${id}`.length).replace(/^\/+/, "");
@@ -42,6 +50,7 @@ export default function ProjectDetail() {
   const [tasks, setTasks] = useState([]);
   const [docs, setDocs] = useState([]);
   const [notes, setNotes] = useState([]);
+  const [contextItems, setContextItems] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -53,17 +62,19 @@ export default function ProjectDetail() {
   const [deleteTaskTarget, setDeleteTaskTarget] = useState(null);
   const [deleteDoc, setDeleteDoc] = useState(null);
   const [deleteNoteTarget, setDeleteNoteTarget] = useState(null);
+  const [deleteContextTarget, setDeleteContextTarget] = useState(null);
   const [mutating, setMutating] = useState(false);
   const [notice, setNotice] = useState(null);
   const triggerRef = useRef(null);
 
   const loadAll = async () => {
     try {
-      const [p, t, d, n, allProjects] = await Promise.all([
+      const [p, t, d, n, ctx, allProjects] = await Promise.all([
         getProject(id),
         getTasks({ project_id: id }),
         getDocuments({ project_id: id }),
         getNotes({ project_id: id }),
+        getProjectContext(id),
         getProjects(),
       ]);
       const enriched = t.map((task) => ({
@@ -74,6 +85,7 @@ export default function ProjectDetail() {
       setTasks(enriched);
       setDocs(d);
       setNotes(n);
+      setContextItems(Array.isArray(ctx) ? ctx : []);
       setProjects(allProjects);
       setLoadError(false);
       setNotFound(false);
@@ -184,6 +196,30 @@ export default function ProjectDetail() {
     } catch {
       setDeleteNoteTarget(null);
       setNotice("Couldn't delete the note.");
+    }
+  };
+
+  const handleCreateContext = async () => {
+    const item = await createProjectContext(Number(id), { content: "" });
+    await loadAll();
+    return item;
+  };
+
+  const handleUpdateContext = async (itemId, payload) => {
+    await updateProjectContext(Number(id), itemId, payload);
+    await loadAll();
+  };
+
+  const confirmDeleteContext = async () => {
+    if (!deleteContextTarget) return;
+    try {
+      await deleteProjectContext(Number(id), deleteContextTarget.id);
+      setDeleteContextTarget(null);
+      setNotice("Context fact deleted");
+      loadAll();
+    } catch {
+      setDeleteContextTarget(null);
+      setNotice("Couldn't delete the context fact.");
     }
   };
 
@@ -335,6 +371,14 @@ export default function ProjectDetail() {
             onDelete={setDeleteNoteTarget}
           />
         )}
+        {tab === "context" && (
+          <ProjectContext
+            items={contextItems}
+            onCreate={handleCreateContext}
+            onUpdate={handleUpdateContext}
+            onDelete={setDeleteContextTarget}
+          />
+        )}
         {tab === "ai" && <ProjectAi project={project} />}
       </div>
 
@@ -398,6 +442,17 @@ export default function ProjectDetail() {
           <div className="modal-footer">
             <OrbitButton variant="ghost" onClick={() => setDeleteNoteTarget(null)}>Cancel</OrbitButton>
             <OrbitButton variant="danger" onClick={confirmDeleteNote}>Delete</OrbitButton>
+          </div>
+        </Modal>
+      )}
+
+      {deleteContextTarget && (
+        <Modal title="Delete this fact?" onClose={() => setDeleteContextTarget(null)}>
+          <p className="confirm-text">"{deleteContextTarget.content}"</p>
+          <p className="confirm-hint">Orbit will stop using it as project context.</p>
+          <div className="modal-footer">
+            <OrbitButton variant="ghost" onClick={() => setDeleteContextTarget(null)}>Cancel</OrbitButton>
+            <OrbitButton variant="danger" onClick={confirmDeleteContext}>Delete</OrbitButton>
           </div>
         </Modal>
       )}

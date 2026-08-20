@@ -24,12 +24,17 @@ vi.mock("../api", () => ({
   uploadDocument: vi.fn(),
   deleteDocument: vi.fn(),
   getDocumentDownloadUrl: vi.fn(),
+  getProjectContext: vi.fn(),
+  createProjectContext: vi.fn(),
+  updateProjectContext: vi.fn(),
+  deleteProjectContext: vi.fn(),
 }));
 
 import {
   getProject, getProjects, getTasks, createTask, updateTask, deleteTask,
   getDocuments, uploadDocument, deleteDocument,
   getNotes, createNote, updateNote, deleteNote,
+  getProjectContext, createProjectContext, updateProjectContext, deleteProjectContext,
 } from "../api";
 
 const atLocal = (y, m, d, h = 12) => new Date(y, m, d, h).toISOString();
@@ -55,6 +60,10 @@ const notes = [
   { id: 1, title: "Kickoff notes", content: "Decided on battery chemistry and cell layout.", updated_at: atLocal(2026, 1, 7), created_at: atLocal(2026, 1, 7), project_id: 1 },
 ];
 
+const contextItems = [
+  { id: 1, content: "Motor controller rated for 100A continuous.", category: "spec", updated_at: atLocal(2026, 1, 8), created_at: atLocal(2026, 1, 8), project_id: 1 },
+];
+
 const projectsList = [project, { id: 2, name: "In-SEM", category: "college", status: "active", color: "#22c55e" }];
 
 function renderDetail(route = "/projects/1") {
@@ -66,6 +75,7 @@ function renderDetail(route = "/projects/1") {
         <Route path="/projects/:id/tasks" element={<ProjectDetail />} />
         <Route path="/projects/:id/documents" element={<ProjectDetail />} />
         <Route path="/projects/:id/notes" element={<ProjectDetail />} />
+        <Route path="/projects/:id/context" element={<ProjectDetail />} />
         <Route path="/projects/:id/ai" element={<ProjectDetail />} />
       </Routes>
     </MemoryRouter>
@@ -78,6 +88,7 @@ beforeEach(() => {
   getTasks.mockResolvedValue(tasks);
   getDocuments.mockResolvedValue(docs);
   getNotes.mockResolvedValue(notes);
+  getProjectContext.mockResolvedValue(contextItems);
   createTask.mockResolvedValue({ id: 10, title: "New task" });
   updateTask.mockResolvedValue({});
   deleteTask.mockResolvedValue({});
@@ -86,6 +97,9 @@ beforeEach(() => {
   createNote.mockResolvedValue(notes[0]);
   updateNote.mockResolvedValue({});
   deleteNote.mockResolvedValue({});
+  createProjectContext.mockResolvedValue(contextItems[0]);
+  updateProjectContext.mockResolvedValue({});
+  deleteProjectContext.mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -394,5 +408,73 @@ describe("Project Orbit AI tab", () => {
       expect(message.content).not.toContain("data:");
     }
     expect(JSON.stringify(body)).not.toMatch(/\\u0000|base64|image\/(png|jpeg|webp)/);
+  });
+});
+
+describe("Project context tab", () => {
+  async function openContext() {
+    const user = userEvent.setup();
+    renderDetail();
+    await screen.findByText("BAJA HV");
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+    await screen.findByText("Motor controller rated for 100A continuous.");
+    return user;
+  }
+
+  it("requests only this project's context", async () => {
+    renderDetail();
+    await screen.findByText("BAJA HV");
+    expect(getProjectContext).toHaveBeenCalledWith("1");
+  });
+
+  it("lists this project's context facts with category", async () => {
+    await openContext();
+    expect(screen.getByText("Motor controller rated for 100A continuous.")).toBeInTheDocument();
+    expect(screen.getByText("spec")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add fact" })).toBeInTheDocument();
+  });
+
+  it("creates a context fact scoped to this project", async () => {
+    const user = await openContext();
+    await user.click(screen.getByRole("button", { name: "Add fact" }));
+    await waitFor(() => {
+      expect(createProjectContext).toHaveBeenCalledWith(1, { content: "" });
+    });
+  });
+
+  it("edits a context fact", async () => {
+    const user = await openContext();
+    await user.click(screen.getByRole("button", { name: "Edit context fact" }));
+    const textarea = screen.getByLabelText("Context fact");
+    await user.clear(textarea);
+    await user.type(textarea, "Motor controller rated for 120A continuous.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(updateProjectContext).toHaveBeenCalledWith(
+        1,
+        1,
+        expect.objectContaining({ content: "Motor controller rated for 120A continuous." })
+      );
+    });
+  });
+
+  it("deletes a context fact after confirmation", async () => {
+    const user = await openContext();
+    await user.click(screen.getByRole("button", { name: "Delete context fact" }));
+    await screen.findByText("Delete this fact?");
+    const modal = document.querySelector(".modal");
+    await user.click(within(modal).getByRole("button", { name: "Delete" }));
+    await waitFor(() => {
+      expect(deleteProjectContext).toHaveBeenCalledWith(1, 1);
+    });
+  });
+
+  it("shows an empty state when there are no facts", async () => {
+    getProjectContext.mockResolvedValue([]);
+    const user = userEvent.setup();
+    renderDetail();
+    await screen.findByText("BAJA HV");
+    await user.click(screen.getByRole("tab", { name: "Context" }));
+    expect(await screen.findByText("No project context yet.")).toBeInTheDocument();
   });
 });

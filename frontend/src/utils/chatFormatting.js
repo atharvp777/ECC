@@ -55,7 +55,12 @@ export function formatAssistantContent(content) {
     return "I didn't get a response.";
   }
 
-  const toolErrorMatch = text.match(/^Tool '(.+?)' failed:\s*(.+)$/s);
+  // A [SAVE_CONTEXT] offer is a UI affordance, not prose: strip the marker so
+  // the plain text answer reads cleanly (the suggest card renders the offer).
+  const stripped = text.replace(/\[SAVE_CONTEXT\][\s\S]*?\[\/SAVE_CONTEXT\]/g, "").trim();
+  const contentForDisplay = stripped || text;
+
+  const toolErrorMatch = contentForDisplay.match(/^Tool '(.+?)' failed:\s*(.+)$/s);
   if (toolErrorMatch) {
     const detail = toolErrorMatch[2].trim();
 
@@ -76,30 +81,30 @@ export function formatAssistantContent(content) {
     return detail;
   }
 
-  const createdTaskMatch = text.match(/^Created task "(.+?)"(?: in project ID \d+)?\.$/s);
+  const createdTaskMatch = contentForDisplay.match(/^Created task "(.+?)"(?: in project ID \d+)?\.$/s);
   if (createdTaskMatch) {
     return `Task created successfully: **${escapeMarkdown(createdTaskMatch[1])}**.`;
   }
 
-  const createdProjectMatch = text.match(/^Created project "(.+?)"\.$/s);
+  const createdProjectMatch = contentForDisplay.match(/^Created project "(.+?)"\.$/s);
   if (createdProjectMatch) {
     return `Project created successfully: **${escapeMarkdown(createdProjectMatch[1])}**.`;
   }
 
-  const updatedProjectMatch = text.match(/^Updated project "(.+?)"\.$/s);
+  const updatedProjectMatch = contentForDisplay.match(/^Updated project "(.+?)"\.$/s);
   if (updatedProjectMatch) {
     return `Project updated successfully: **${escapeMarkdown(updatedProjectMatch[1])}**.`;
   }
 
-  if (/^Updated task \d+\.$/s.test(text)) {
+  if (/^Updated task \d+\.$/s.test(contentForDisplay)) {
     return "Task updated successfully.";
   }
 
-  if (/^Marked task \d+ as completed\.$/s.test(text)) {
+  if (/^Marked task \d+ as completed\.$/s.test(contentForDisplay)) {
     return "Task marked as completed.";
   }
 
-  const tasksMatch = text.match(/^Tasks:\s*(.*)$/is);
+  const tasksMatch = contentForDisplay.match(/^Tasks:\s*(.*)$/is);
   if (tasksMatch) {
     const items = splitListBody(tasksMatch[1]);
     if (!items.length) {
@@ -109,7 +114,7 @@ export function formatAssistantContent(content) {
     return `Tasks for today\n\n${formatItemsAsMarkdown(items, { showPriority: true })}`;
   }
 
-  const projectsMatch = text.match(/^Projects:\s*(.*)$/is);
+  const projectsMatch = contentForDisplay.match(/^Projects:\s*(.*)$/is);
   if (projectsMatch) {
     const items = splitListBody(projectsMatch[1].replace(/,/g, ";"));
     if (!items.length) {
@@ -119,7 +124,7 @@ export function formatAssistantContent(content) {
     return `Projects\n\n${formatItemsAsMarkdown(items)}`;
   }
 
-  const meetingsMatch = text.match(/^Meetings:\s*(.*)$/is);
+  const meetingsMatch = contentForDisplay.match(/^Meetings:\s*(.*)$/is);
   if (meetingsMatch) {
     const items = splitListBody(meetingsMatch[1]);
     if (!items.length) {
@@ -129,7 +134,7 @@ export function formatAssistantContent(content) {
     return `Meetings\n\n${formatItemsAsMarkdown(items)}`;
   }
 
-  const calendarMatch = text.match(/^Calendar events?:\s*(.*)$/is);
+  const calendarMatch = contentForDisplay.match(/^Calendar events?:\s*(.*)$/is);
   if (calendarMatch) {
     const items = splitListBody(calendarMatch[1]);
     if (!items.length) {
@@ -139,7 +144,16 @@ export function formatAssistantContent(content) {
     return `Upcoming calendar events\n\n${formatItemsAsMarkdown(items)}`;
   }
 
-  return text;
+  // A saved-context confirmation's body reads as the fact itself; the card
+  // already carries the project name / navigation, so show only the content.
+  const savedContextMatch = contentForDisplay.match(
+    /^Saved to ".+?" project context \(project \d+\):\s*\n?([\s\S]+)$/s
+  );
+  if (savedContextMatch) {
+    return savedContextMatch[1].trim();
+  }
+
+  return contentForDisplay;
 }
 
 /* ============================================================================
@@ -275,6 +289,37 @@ export function parseActionCard(content) {
       blocks,
       nav: [{ label: "Show Calendar", to: "/calendar" }],
       confirm: "Schedule this plan",
+    };
+  }
+
+  // A context fact was saved to a project's durable memory. The project id is
+  // embedded in the reply so the card can navigate straight to that project's
+  // Context tab. Presentation only — the write already happened server-side.
+  m = text.match(
+    /^Saved to "(.+?)" project context \(project (\d+)\):\s*\n?([\s\S]+)$/s
+  );
+  if (m) {
+    return {
+      kind: "context-saved",
+      title: m[3].trim(),
+      meta: `Saved to ${m[1]} project context`,
+      nav: [{ label: "View project context", to: `/projects/${m[2]}/context` }],
+    };
+  }
+
+  // The assistant OFFERED to save a durable fact. This is a suggestion only —
+  // nothing is written until the user confirms via the card's action.
+  m = text.match(/\[SAVE_CONTEXT\]([^:\]]+):\s*([\s\S]*?)\[\/SAVE_CONTEXT\]/);
+  if (m) {
+    return {
+      kind: "context-suggest",
+      title: "Save this as project context?",
+      meta: `${m[1].trim()}`,
+      blocks: [
+        { start: "Fact", end: "", title: m[2].trim() },
+      ],
+      confirm: "Save to project context",
+      dismiss: "Don't save",
     };
   }
 

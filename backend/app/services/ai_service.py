@@ -756,7 +756,33 @@ recommend what to work on first, but never invent tasks, deadlines, calendar
 events or free time, and never claim an action was performed unless a mutation
 tool result in the context confirms it.
 
-Actions: the backend tool layer can create, update and complete tasks, create/update projects, and manage Google Calendar events. When the user asks for one of these actions the tool layer executes it and hands you the real result — never refuse an action request on the grounds that you cannot mutate data. But never claim an action was performed unless a tool result in the context confirms it; if no tool actually ran, say you could not execute it."""
+Actions: the backend tool layer can create, update and complete tasks, create/update projects, and manage Google Calendar events. When the user asks for one of these actions the tool layer executes it and hands you the real result — never refuse an action request on the grounds that you cannot mutate data. But never claim an action was performed unless a tool result in the context confirms it; if no tool actually ran, say you could not execute it.
+
+### Project context memory
+
+A project can have durable, user-saved "project context" facts (decisions,
+preferences, constraints, chosen options) that are injected into this
+conversation as DATA. The backend saves them only when the user EXPLICITLY
+asks ("remember …", "save this as context") — you never write to project
+context yourself.
+
+When the user reveals a durable, reusable fact about a project (a decision,
+a preference, a chosen option, a constraint) during a project-scoped
+conversation but does NOT ask you to save it, you may OFFER to save it once,
+at the END of your reply, by appending this exact marker:
+
+[SAVE_CONTEXT]<Project Name>: <the concise fact>[/SAVE_CONTEXT]
+
+Rules for the offer:
+- Only for a genuinely durable, reusable fact about a project — never for
+  one-off requests, tasks, reminders, or calendar events.
+- Only when you know the exact project name from the project context or live
+  context. Never guess a project name.
+- At most one marker per reply, always at the very end.
+- Do not use the marker when the user already asked to save it (that routes to
+  the save tool), or when the user's message is a question.
+- If the user confirms the offer, the backend will save the fact — you must
+  never claim it was saved before that happens."""
 
 
 def _friendly_ai_error_message(exc: Exception) -> str:
@@ -1594,6 +1620,22 @@ Arguments:
 {{"date": "the plan's date in YYYY-MM-DD (usually today — copy it from the
   recommended plan); null to default to today."}}
 
+20. save_project_context  (PERSISTENT WRITE — durable project memory)
+Use ONLY when the user EXPLICITLY asks to REMEMBER or SAVE a durable fact,
+decision, preference or constraint about a project ("remember that we chose
+Data Mining and Cloud Computing as electives", "save this as project context",
+"keep in mind that the deadline moved to Friday"). Never use it for tasks,
+reminders, calendar events, or one-off requests. The backend independently
+re-validates the intent and resolves the authoritative project id; you must NOT
+invent a project_id — pass project_id ONLY from the LIVE CONTEXT when the
+conversation is clearly about that exact project, otherwise pass null.
+Arguments:
+{{"content": "the concise durable fact to remember, copied as-is from the user's
+  request",
+  "project_id": "integer from the LIVE CONTEXT ONLY when the project is
+  unambiguous; otherwise null (the backend decides)",
+  "category": "optional short category label, or null"}}
+
 RULES:
 
 - For CURRENT-STATE planning questions ("what should I focus on today", "what
@@ -1635,6 +1677,19 @@ RULES:
   - If intent is ambiguous, return NONE so the assistant asks for explicit
     confirmation — never assume permission.
   - apply_day_plan only schedules; it never marks a task done.
+- save_project_context SAVING RULES (persistent write — the intent gate):
+  - Call save_project_context ONLY for an EXPLICIT durable-fact request:
+    "remember (that|this)", "save this as project context", "keep in mind
+    (that)", "note down that", "save the following as context". Copy the fact
+    VERBATIM from the user's request into "content".
+  - NEVER call it for questions ("what are my electives?"), explanations
+    ("what is Ohm's law?"), or ambiguous/one-off requests. When unsure, return
+    NONE so the assistant answers normally.
+  - NEVER pass a project_id the user did not name and that is not in the LIVE
+    CONTEXT. The backend ignores any project_id you pass anyway and uses the
+    authoritative project from application context — pass the project_id from
+    the LIVE CONTEXT only when the conversation is clearly about that project,
+    otherwise null.
 
 - Return NONE if the user is only asking a general question.
 - Return a tool call if the user clearly wants an action.
@@ -2196,6 +2251,15 @@ def chat_with_ai(
                 (m["content"] for m in reversed(messages) if m["role"] == "assistant"),
                 None,
             )
+            # Trusted project id for save_project_context: the authoritative
+            # project comes from APPLICATION context — the explicit project-scoped
+            # AI workspace id when present, otherwise a deterministic conversation
+            # resolution. It is never derived from the model/planner's args, so a
+            # model-supplied project_id cannot target another project.
+            trusted_project_id = None
+            if tool_name == "save_project_context":
+                resolved = _resolve_context_project(db, messages, project_id)
+                trusted_project_id = resolved.id if resolved is not None else None
             result = execute_tool(
                 tool_name,
                 args,
@@ -2209,6 +2273,7 @@ def chat_with_ai(
                 explicit_authorization=(
                     not planned_tool_call and tool_name == "apply_day_plan"
                 ),
+                trusted_project_id=trusted_project_id,
             )
             # Handle tool execution errors before trying to render the result.
             data = result.get("data")
@@ -2227,6 +2292,7 @@ def chat_with_ai(
                     "delete_task",
                     "estimate_task_effort",
                     "apply_day_plan",
+                    "save_project_context",
                 )
             ):
                 return data["error"]
@@ -2344,6 +2410,11 @@ def chat_with_ai(
             "estimate_task_effort": lambda: _render_effort_estimate(data),
 
             "apply_day_plan": lambda: _render_day_plan_approval(data),
+
+            "save_project_context": lambda: (
+                f'Saved to "{data["project_name"]}" project context '
+                f'(project {data["project_id"]}):\n{data["content"]}'
+            ),
         }
 
             # Only claim a calendar event was created after the API returned a
@@ -2403,12 +2474,22 @@ def chat_with_ai(
         return ai_provider_configured_message()
 
     try:
+        # Project context is injected ONLY for project-scoped conversations
+        # (explicit project_id): it is durable DATA for the exact project the
+        # user selected. Global chat never receives another project's (or any
+        # project's) context block.
+        from app.services.project_context_service import build_project_context_block
+
+        project_context_block = (
+            build_project_context_block(db, project_id) if project_id is not None else ""
+        )
+
         image_context = _project_image_context(db, messages, project_id)
         if image_context is not None:
             if image_context["note"] is not None:
                 return image_context["note"]
             content = complete_text_multimodal(
-                system=SYSTEM_PROMPT + context + image_context["block"],
+                system=SYSTEM_PROMPT + context + project_context_block + image_context["block"],
                 messages=messages[-_MAX_HISTORY_MESSAGES:],
                 images=image_context["images"],
                 max_tokens=1024,
@@ -2420,7 +2501,7 @@ def chat_with_ai(
 
         doc_context = _project_document_context(db, messages, project_id)
         content = complete_text(
-            system=SYSTEM_PROMPT + context + doc_context,
+            system=SYSTEM_PROMPT + context + project_context_block + doc_context,
             messages=messages[-_MAX_HISTORY_MESSAGES:],
             max_tokens=1024,
             temperature=0.7,

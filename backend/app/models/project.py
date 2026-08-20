@@ -65,6 +65,9 @@ class Project(Base):
     documents: Mapped[list["Document"]] = relationship(  # noqa: F821
         "Document", back_populates="project", cascade="all, delete-orphan"
     )
+    project_context: Mapped[list["ProjectContext"]] = relationship(  # noqa: F821
+        "ProjectContext", back_populates="project", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Project id={self.id} name={self.name!r}>"

@@ -22,6 +22,7 @@ from app.services.tools import (
     plan_my_day as pmd,
     estimate_task_effort as etf,
     apply_day_plan as adp,
+    save_project_context as spc,
     SYSTEM_TIMEZONE,
 )
 from datetime import datetime, timezone, timedelta
@@ -47,7 +48,49 @@ TOOL_FUNCTIONS: Dict[str, Any] = {
     "plan_my_day": pmd,
     "estimate_task_effort": etf,
     "apply_day_plan": adp,
+    "save_project_context": spc,
 }
+
+
+# ----------------------------------------------------------------------
+# save_project_context — server-side authorization gate
+# ----------------------------------------------------------------------
+# The planner is the primary router, but a mutation must never happen on an
+# ambiguous or merely-implicit request. This deterministic guard confirms the
+# user's ORIGINAL message expresses an explicit save/remember intent before any
+# write is allowed. Questions and general requests ("what is X?", "explain Y",
+# "make me a plan") never pass. Document/image text never reaches this layer —
+# the planner only ever sees the user's own message text.
+_SAVE_CONTEXT_QUESTION_STARTERS = (
+    "what", "why", "how", "which", "who", "when", "where",
+    "is ", "are ", "do ", "does ", "can ", "should ", "could ",
+)
+_SAVE_CONTEXT_STRONG_MARKERS = (
+    "remember", "keep in mind", "note down", "note that", "store in",
+    "save this", "save that", "save it", "save our", "save my",
+    "save as project context", "save this as context", "as project context",
+    "save the following", "remember this", "remember that", "remember our",
+    "remember my",
+)
+
+
+def is_context_save_intent(text: str) -> bool:
+    """True only for an EXPLICIT request to save durable project context.
+
+    A bare "save"/"remember" is never enough on its own when it collides with
+    task/reminder/estimate language; the marker list is deliberately explicit.
+    """
+    lower = (text or "").strip().lower()
+    if not lower:
+        return False
+    if "?" in lower:
+        return False
+    if lower.startswith(_SAVE_CONTEXT_QUESTION_STARTERS):
+        return False
+    # Reminder/action wording must never be treated as a durable-fact save.
+    if "remind" in lower or "reminder" in lower:
+        return False
+    return any(marker in lower for marker in _SAVE_CONTEXT_STRONG_MARKERS)
 
 
 def _is_google_event_id_like(value: str) -> bool:
@@ -100,6 +143,7 @@ def execute_tool(
     user_message: Optional[str] = None,
     last_assistant_reply: Optional[str] = None,
     explicit_authorization: bool = False,
+    trusted_project_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Dispatch a tool call.
@@ -116,6 +160,11 @@ def execute_tool(
     server-side authorization gate for apply_day_plan: the user's conversational
     message must explicitly authorize calendar writes (a /tool directive counts
     as explicit authorization).
+
+    ``trusted_project_id`` is the authoritative project id from application
+    context (the project-scoped AI workspace, or a deterministic conversation
+    resolution) for the save_project_context tool. It is never derived from the
+    model/planner: any project_id the model puts in ``args`` is discarded.
     """
     tool_func = TOOL_FUNCTIONS.get(tool_name)
 
@@ -143,6 +192,57 @@ def execute_tool(
                     "reply_direct": True,
                 }
             }
+
+    # ---- save_project_context: server-side authorization gate ---------------
+    # A durable-context write happens ONLY when (a) the user's original message
+    # expresses explicit save/remember intent (a /tool directive is inherently
+    # explicit) and (b) a trusted project id exists from application context.
+    # The model/planner can never authorize this write and never supplies the
+    # project id.
+    if tool_name == "save_project_context":
+        from app.services.tools import SaveProjectContextRequest
+
+        if user_message is not None and not is_context_save_intent(user_message):
+            return {
+                "data": {
+                    "error": (
+                        "I can't save that as project context — your message "
+                        "doesn't look like an explicit request to remember it. "
+                        "To save a durable fact, say something like "
+                        '"Remember that we chose a microservices architecture."'
+                    ),
+                    "reply_direct": True,
+                }
+            }
+        if trusted_project_id is None:
+            return {
+                "data": {
+                    "error": (
+                        "I couldn't determine which project to save this context "
+                        "to. Open the project's AI workspace (or mention the "
+                        "project explicitly) and try again."
+                    ),
+                    "reply_direct": True,
+                }
+            }
+        # Never trust a model/planner-generated project_id. The trusted id from
+        # application context is authoritative; a spoofed/mistaken id is dropped.
+        try:
+            args = dict(args or {})
+            content = args["content"]
+        except (KeyError, TypeError, ValueError):
+            return {"data": {"error": "save_project_context requires a content string"}}
+        if not isinstance(content, str) or not content.strip():
+            return {"data": {"error": "save_project_context requires a non-empty content string"}}
+        args = {
+            "content": content,
+            "project_id": trusted_project_id,
+            "category": args.get("category"),
+            "source": args.get("source"),
+        }
+
+        request = SaveProjectContextRequest(**args)
+        return tool_func(db, request)
 
     try:
         args = dict(args or {})
@@ -326,6 +426,7 @@ def execute_tool(
             PlanMyDayRequest,
             EstimateTaskEffortRequest,
             ApplyDayPlanRequest,
+            SaveProjectContextRequest,
         )
 
         request_models = {
@@ -348,6 +449,7 @@ def execute_tool(
             "plan_my_day": PlanMyDayRequest,
             "estimate_task_effort": EstimateTaskEffortRequest,
             "apply_day_plan": ApplyDayPlanRequest,
+            "save_project_context": SaveProjectContextRequest,
         }
 
         request_model = request_models.get(tool_name)

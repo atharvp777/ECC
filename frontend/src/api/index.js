@@ -35,6 +35,16 @@ export const createNote = (data) => api.post("/notes/", data).then(r => r.data);
 export const updateNote = (id, data) => api.patch(`/notes/${id}`, data).then(r => r.data);
 export const deleteNote = (id) => api.delete(`/notes/${id}`);
 
+// Project context (durable, project-scoped memory)
+export const getProjectContext = (projectId) =>
+  api.get(`/projects/${projectId}/context`).then(r => r.data);
+export const createProjectContext = (projectId, data) =>
+  api.post(`/projects/${projectId}/context`, data).then(r => r.data);
+export const updateProjectContext = (projectId, id, data) =>
+  api.patch(`/projects/${projectId}/context/${id}`, data).then(r => r.data);
+export const deleteProjectContext = (projectId, id) =>
+  api.delete(`/projects/${projectId}/context/${id}`);
+
 // Documents
 export const getDocuments = (params = {}) => api.get("/documents/", { params }).then(r => r.data);
 export const uploadDocument = (formData) =>

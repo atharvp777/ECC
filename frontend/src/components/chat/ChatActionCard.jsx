@@ -8,9 +8,11 @@ const KIND_LABELS = {
   "day-plan-ready": "Day plan ready",
   "project-created": "Project created",
   "project-updated": "Project updated",
+  "context-saved": "Saved to project context",
+  "context-suggest": "Orbit suggests saving",
 };
 
-export default function ChatActionCard({ card, onNavigate, onConfirm }) {
+export default function ChatActionCard({ card, onNavigate, onConfirm, onDismiss }) {
   const kindLabel = KIND_LABELS[card.kind] || "Action";
 
   return (
@@ -22,9 +24,7 @@ export default function ChatActionCard({ card, onNavigate, onConfirm }) {
         <ul className="orbit-chat__card-blocks">
           {card.blocks.map((block, index) => (
             <li key={index} className="orbit-chat__card-block">
-              <span className="orbit-chat__card-block-time">
-                {block.start}-{block.end}
-              </span>
+              {block.start && <span className="orbit-chat__card-block-time">{block.start}</span>}
               <span className="orbit-chat__card-block-title">{block.title}</span>
             </li>
           ))}
@@ -38,6 +38,15 @@ export default function ChatActionCard({ card, onNavigate, onConfirm }) {
             onClick={() => onConfirm(card)}
           >
             {card.confirm}
+          </button>
+        )}
+        {card.dismiss && (
+          <button
+            type="button"
+            className="orbit-btn orbit-btn--ghost orbit-btn--sm"
+            onClick={() => onDismiss && onDismiss(card)}
+          >
+            {card.dismiss}
           </button>
         )}
         {card.nav &&

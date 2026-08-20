@@ -10,6 +10,7 @@ import app.models  # noqa: F401
 
 from app.routers import (
     projects,
+    project_context,
     tasks,
     notes,
     documents,
@@ -58,6 +59,7 @@ app.add_middleware(
 
 # API routers
 app.include_router(projects.router)
+app.include_router(project_context.router)
 app.include_router(tasks.router)
 app.include_router(notes.router)
 app.include_router(documents.router)

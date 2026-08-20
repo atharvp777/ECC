@@ -6,10 +6,15 @@ import {
 } from "../../utils/chatFormatting";
 import ChatActionCard from "./ChatActionCard";
 
-export default function ChatMessage({ message, onNavigate, onConfirm }) {
+function cardKeyOf(card) {
+  return `${card.kind}:${card.title}`;
+}
+
+export default function ChatMessage({ message, onNavigate, onConfirm, dismissed, onDismiss }) {
   const isUser = message.role === "user";
   const card = isUser ? null : parseActionCard(message.content);
   const indicators = isUser ? [] : extractContextIndicators(message.content);
+  const cardDismissed = card ? dismissed.has(cardKeyOf(card)) : false;
 
   return (
     <div
@@ -19,11 +24,12 @@ export default function ChatMessage({ message, onNavigate, onConfirm }) {
         <p className="orbit-chat__user-text">{message.content}</p>
       ) : (
         <div className="orbit-chat__orbit">
-          {card && (
+          {card && !cardDismissed && (
             <ChatActionCard
               card={card}
               onNavigate={onNavigate}
               onConfirm={onConfirm}
+              onDismiss={onDismiss}
             />
           )}
           {indicators.length > 0 && (

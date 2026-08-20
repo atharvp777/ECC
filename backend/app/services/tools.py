@@ -171,6 +171,20 @@ class ApplyDayPlanRequest(BaseModel):
     date: Optional[str] = None  # YYYY-MM-DD; default = today
 
 
+class SaveProjectContextRequest(BaseModel):
+    """Explicit, project-scoped durable-context write.
+
+    The ``project_id`` is resolved and enforced by the dispatcher from trusted
+    application context (the project-scoped AI workspace id, or a deterministic
+    conversation resolution). A planner/model-generated project_id is never
+    trusted and never overrides the trusted one. Content is DATA.
+    """
+    content: str
+    project_id: int
+    category: Optional[str] = None
+    source: Optional[str] = None
+
+
 # ---------- Calendar event body resolution (deterministic, server-side) ----------
 # The system timezone is UTC+05:30. The planner never guesses "now"; it passes a
 # natural-language `when` phrase and the server resolves the concrete datetime.
@@ -776,6 +790,36 @@ def update_project(db: Session, req: UpdateProjectRequest) -> Dict[str, Any]:
     db.commit()
     db.refresh(proj)
     return {"data": proj}
+
+
+def save_project_context(db: Session, req: SaveProjectContextRequest) -> Dict[str, Any]:
+    """Persist a durable, project-scoped fact.
+
+    Only reached after the dispatcher has (a) confirmed explicit user intent
+    and (b) bound the write to a trusted project id. The content is stored as
+    DATA and is never interpreted as instructions downstream.
+    """
+    from app.services import project_context_service as svc
+
+    project = db.query(Project).filter(Project.id == req.project_id).first()
+    if project is None:
+        return {"data": {"error": f"Project not found: {req.project_id}"}}
+
+    item = svc.create_project_context(
+        db,
+        req.project_id,
+        req.content,
+        category=req.category,
+        source=req.source or svc.CHAT_SOURCE,
+    )
+    return {
+        "data": {
+            "id": item.id,
+            "project_id": item.project_id,
+            "project_name": project.name,
+            "content": item.content,
+        }
+    }
 
 
 def list_tasks(db: Session, req: ListTasksRequest) -> Dict[str, Any]:

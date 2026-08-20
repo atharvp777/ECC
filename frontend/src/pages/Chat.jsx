@@ -206,6 +206,27 @@ export default function Chat() {
     send("Schedule the recommended plan.");
   };
 
+  const handleCardConfirm = (card) => {
+    if (card.kind === "context-suggest") {
+      const fact = card.blocks?.[0]?.title || card.title;
+      const project = card.meta;
+      send(`Remember that ${fact} for the ${project} project.`);
+      return;
+    }
+    if (card.kind === "day-plan-ready") {
+      confirmSchedule();
+    }
+  };
+
+  const [dismissedCards, setDismissedCards] = useState(() => new Set());
+  const handleCardDismiss = (card) => {
+    setDismissedCards((prev) => {
+      const next = new Set(prev);
+      next.add(`${card.kind}:${card.title}`);
+      return next;
+    });
+  };
+
   const statusLabel =
     aiStatus === "online"
       ? "AI online"
@@ -265,7 +286,9 @@ export default function Chat() {
                 messages={messages}
                 loading={loading}
                 onNavigate={navigate}
-                onConfirm={confirmSchedule}
+                onConfirm={handleCardConfirm}
+                dismissed={dismissedCards}
+                onDismiss={handleCardDismiss}
               />
             )}
           </div>

@@ -6,6 +6,7 @@ const TABS = [
   ["tasks", "Tasks", "/tasks"],
   ["documents", "Documents", "/documents"],
   ["notes", "Notes", "/notes"],
+  ["context", "Context", "/context"],
   ["ai", "Orbit AI", "/ai"],
 ];
 

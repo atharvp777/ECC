@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import ChatMessage from "./ChatMessage";
 
-export default function ChatMessageList({ messages, loading, onNavigate, onConfirm }) {
+export default function ChatMessageList({ messages, loading, onNavigate, onConfirm, dismissed, onDismiss }) {
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -16,6 +16,8 @@ export default function ChatMessageList({ messages, loading, onNavigate, onConfi
           message={message}
           onNavigate={onNavigate}
           onConfirm={onConfirm}
+          dismissed={dismissed}
+          onDismiss={onDismiss}
         />
       ))}
       {loading && (
