@@ -668,3 +668,102 @@ def test_recent_calendar_events_recorded_after_confirmed_write(db_session):
 
     ids = [e["event_id"] for e in ai_service._RECENT_CALENDAR_EVENTS[:5]]
     assert "recent-1" in ids
+
+
+# ----------------------------------------------------------------------
+# Corrective-fix regression tests (planner "none" sentinel + phrase variants)
+# ----------------------------------------------------------------------
+def test_planner_none_sentinel_is_never_dispatched(db_session):
+    # The Gemini json_mode "no tool" answer may arrive as the object sentinel
+    # {"tool": "none", "args": {}} instead of the bare NONE token. It must be
+    # treated exactly as no tool and NEVER reach execute_tool.
+    p = _seed_project(db_session)
+    with patch("app.services.ai_service.plan_tool_call", return_value={"tool": "none", "args": {}}), \
+         patch("app.services.ai_service.execute_tool") as mock_exec, \
+         patch("app.services.ai_service.complete_text", return_value="hello from the fallback") as mock_ct:
+        reply = chat_with_ai(
+            [{"role": "user", "content": "say hi"}],
+            db_session,
+            project_id=p.id,
+        )
+
+    assert mock_exec.call_count == 0
+    assert "Unknown tool" not in reply
+    assert reply == "hello from the fallback"
+    assert mock_ct.called
+
+
+def test_planner_uppercase_none_sentinel_is_never_dispatched(db_session):
+    p = _seed_project(db_session)
+    with patch("app.services.ai_service.plan_tool_call", return_value={"tool": "NONE", "args": {}}), \
+         patch("app.services.ai_service.execute_tool") as mock_exec, \
+         patch("app.services.ai_service.complete_text", return_value="fallback") as mock_ct:
+        reply = chat_with_ai(
+            [{"role": "user", "content": "anything"}],
+            db_session,
+            project_id=p.id,
+        )
+
+    assert mock_exec.call_count == 0
+    assert reply == "fallback"
+
+
+@pytest.mark.parametrize("message", [
+    "Set those dates on my calendar",
+    "set the exam dates on my calendar",
+    "add those exam dates to my calendar",
+    "put these exam dates on my calendar",
+])
+def test_reference_phrase_variants_propose_same_dates_zero_writes(db_session, message):
+    # All equivalent deictic variants must resolve to the SAME proposal with
+    # ZERO writes on the first request.
+    p = _seed_project(db_session)
+    _seed_context(db_session, p.id, EXAM_SCHEDULE)
+    _present(db_session, p.id)
+    with patch("app.services.ai_service.plan_tool_call", return_value=None), \
+         patch("app.services.ai_service.execute_tool") as mock_exec:
+        reply = chat_with_ai(
+            [{"role": "assistant", "content": _PRESENTING_REPLY}, {"role": "user", "content": message}],
+            db_session,
+            project_id=p.id,
+        )
+
+    assert reply.startswith("I found these 5 dates:")
+    assert "DSV(410341) — August 25, 2026" in reply
+    assert "Add all 5 to your Google Calendar?" in reply
+    create_calls = [c for c in mock_exec.call_args_list if c.args[0] == "create_calendar_event"]
+    assert create_calls == []
+
+
+def test_second_confirmation_creates_no_additional_writes(db_session):
+    p = _seed_project(db_session)
+    _seed_context(db_session, p.id, EXAM_SCHEDULE)
+    _present(db_session, p.id)
+    create_calls = []
+
+    def fake_execute(tool_name, args, db, **kwargs):
+        if tool_name == "create_calendar_event":
+            create_calls.append(args["event_data"])
+            return {"data": {"id": f"e-{len(create_calls)}", "summary": args["event_data"]["summary"], "start": args["event_data"]["start"], "end": args["event_data"]["end"]}}
+        return {"data": {}}
+
+    with patch("app.services.ai_service.plan_tool_call", return_value=None), \
+         patch("app.services.ai_service.execute_tool", side_effect=fake_execute), \
+         patch("app.services.ai_service.complete_text", return_value="already done"):
+        proposal = chat_with_ai(
+            [{"role": "assistant", "content": _PRESENTING_REPLY}, {"role": "user", "content": "Set those dates on my calendar"}],
+            db_session, project_id=p.id,
+        )
+        first = chat_with_ai(
+            [{"role": "assistant", "content": _PRESENTING_REPLY}, {"role": "user", "content": "Set those dates on my calendar"}, {"role": "assistant", "content": proposal}, {"role": "user", "content": "Yes"}],
+            db_session, project_id=p.id,
+        )
+        second = chat_with_ai(
+            [{"role": "assistant", "content": _PRESENTING_REPLY}, {"role": "user", "content": "Set those dates on my calendar"}, {"role": "assistant", "content": proposal}, {"role": "user", "content": "Yes"}, {"role": "assistant", "content": first}, {"role": "user", "content": "Okay"}],
+            db_session, project_id=p.id,
+        )
+
+    assert len(create_calls) == 5
+    assert "Added 5 events" in first
+    assert second == "already done"
+    assert len(create_calls) == 5

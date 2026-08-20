@@ -2427,6 +2427,14 @@ def chat_with_ai(
         )
         planned_tool_call = tool_call is not None
 
+    # A planner "no tool" answer may arrive in json_mode as the sentinel object
+    # {"tool": "none", "args": {}} instead of the bare NONE token. Treat it
+    # EXACTLY as no tool: it must never reach the dispatcher as a real tool
+    # name (execute_tool would report "Unknown tool: none").
+    if tool_call and str(tool_call.get("tool") or "").strip().lower() == "none":
+        tool_call = None
+        planned_tool_call = False
+
     if tool_call:
         tool_name = tool_call["tool"]
         args = tool_call["args"]

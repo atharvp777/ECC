@@ -381,7 +381,9 @@ _REFERENCE_PHRASE_RE = re.compile(
     r"\b(those|these|them|the above|the dates|the events|the schedule|"
     r"the calendar|the list|the ones above|that schedule|this schedule|"
     r"that event|that day|those days|those dates|these dates|those events|"
-    r"these events|all of those|all of them|above dates)\b",
+    r"these events|all of those|all of them|above dates|"
+    r"the exam dates|those exam dates|these exam dates|all the exam dates|"
+    r"all those exam dates|all these exam dates)\b",
     re.IGNORECASE,
 )
 
