@@ -200,7 +200,7 @@ export default function ProjectDetail() {
   };
 
   const handleCreateContext = async () => {
-    const item = await createProjectContext(Number(id), { content: "" });
+    const item = await createProjectContext(Number(id), { content: "New fact" });
     await loadAll();
     return item;
   };

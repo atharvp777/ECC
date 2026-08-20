@@ -434,12 +434,15 @@ describe("Project context tab", () => {
     expect(screen.getByRole("button", { name: "Add fact" })).toBeInTheDocument();
   });
 
-  it("creates a context fact scoped to this project", async () => {
+  it("creates a context fact scoped to this project and opens the editor", async () => {
     const user = await openContext();
     await user.click(screen.getByRole("button", { name: "Add fact" }));
     await waitFor(() => {
-      expect(createProjectContext).toHaveBeenCalledWith(1, { content: "" });
+      expect(createProjectContext).toHaveBeenCalledWith(1, { content: "New fact" });
     });
+    // The new fact must be created with non-empty content (the backend rejects
+    // empty content with 422) and the inline editor must open for editing.
+    expect(await screen.findByLabelText("Context fact")).toBeInTheDocument();
   });
 
   it("edits a context fact", async () => {
