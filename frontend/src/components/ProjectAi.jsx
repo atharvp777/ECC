@@ -12,6 +12,31 @@ const EXAMPLE_PROMPTS = [
   "What's overdue?",
 ];
 
+const PROJECT_CHAT_STORAGE_PREFIX = "ecc_project_chat_";
+
+function projectChatStorageKey(projectId) {
+  return projectId != null ? `${PROJECT_CHAT_STORAGE_PREFIX}${projectId}` : null;
+}
+
+function loadProjectMessages(storageKey) {
+  if (!storageKey) return [];
+  try {
+    const stored = sessionStorage.getItem(storageKey);
+    if (!stored) return [];
+    const parsed = JSON.parse(stored);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (message) =>
+        message &&
+        typeof message === "object" &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string"
+    );
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Project-scoped Orbit AI. Reuses the existing /chat endpoint — a leading
  * context message scopes the conversation to this project. Not a second AI
@@ -22,11 +47,29 @@ export default function ProjectAi({ project }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const endRef = useRef(null);
+  const hydratedKeyRef = useRef(null);
+  const storageKey = projectChatStorageKey(project?.id);
 
+  // Persist the current project's conversation whenever it changes. Declared
+  // BEFORE hydration so the guard below skips writing while a project switch
+  // has not yet hydrated: project A's messages must never land under project
+  // B's sessionStorage key.
   useEffect(() => {
-    setMessages([]);
+    if (!storageKey || hydratedKeyRef.current !== storageKey || messages.length === 0) return;
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(messages));
+    } catch {
+      // Keep the chat functional if storage is unavailable.
+    }
+  }, [messages, storageKey]);
+
+  // Hydrate (or clear) the conversation when this project mounts or changes.
+  // This only restores UI state — it never triggers an API request.
+  useEffect(() => {
+    hydratedKeyRef.current = storageKey;
+    setMessages(loadProjectMessages(storageKey));
     setInput("");
-  }, [project?.id]);
+  }, [storageKey]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
